@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+
+# Electron
+node_modules/
+dist/
+
+# Environment variables
+.env
+
+# Database
+data/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+package-lock.json
