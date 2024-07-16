@@ -48,6 +48,11 @@ function App() {
       setPromptTemplate(data.prompt_template);
     } catch (error) {
       console.error('Error fetching config:', error);
+      setSnackbar({
+        open: true,
+        message: 'Error fetching configuration',
+        severity: 'error'
+      });
     }
   };
 
@@ -92,6 +97,11 @@ function App() {
       }
     } catch (error) {
       console.error('Error querying documents:', error);
+      setSnackbar({
+        open: true,
+        message: 'Error querying documents',
+        severity: 'error'
+      });
     } finally {
       setIsLoading(false);
     }
@@ -154,17 +164,17 @@ function App() {
       if (response.ok) {
         setSnackbar({
           open: true,
-          message: 'Config saved successfully',
+          message: 'Configuration saved successfully',
           severity: 'success'
         });
       } else {
-        throw new Error('Failed to save config');
+        throw new Error('Failed to save configuration');
       }
     } catch (error) {
       console.error('Error saving config:', error);
       setSnackbar({
         open: true,
-        message: 'Error saving config',
+        message: 'Error saving configuration',
         severity: 'error'
       });
     }
@@ -180,17 +190,17 @@ function App() {
         await fetchConfig();
         setSnackbar({
           open: true,
-          message: 'Config reset to default',
+          message: 'Configuration reset to default',
           severity: 'success'
         });
       } else {
-        throw new Error('Failed to reset config');
+        throw new Error('Failed to reset configuration');
       }
     } catch (error) {
       console.error('Error resetting config:', error);
       setSnackbar({
         open: true,
-        message: 'Error resetting config',
+        message: 'Error resetting configuration',
         severity: 'error'
       });
     }
@@ -207,6 +217,7 @@ function App() {
           <IconButton
             sx={{ position: 'absolute', top: 0, right: 0 }}
             onClick={handleConfigOpen}
+            aria-label="settings"
           >
             <SettingsIcon />
           </IconButton>
@@ -257,6 +268,9 @@ function App() {
         <Dialog open={configOpen} onClose={handleConfigClose}>
           <DialogTitle>Configuration</DialogTitle>
           <DialogContent>
+            <Typography variant="body2" gutterBottom>
+              Customize the prompt template. Use {'{context}'} for the retrieved document content and {'{question}'} for the user's question.
+            </Typography>
             <TextField
               autoFocus
               margin="dense"
@@ -264,7 +278,7 @@ function App() {
               type="text"
               fullWidth
               multiline
-              rows={4}
+              rows={8}
               variant="outlined"
               value={promptTemplate}
               onChange={(e) => setPromptTemplate(e.target.value)}

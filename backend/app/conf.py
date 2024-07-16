@@ -6,13 +6,11 @@ class Config:
         self.config_file = config_file
         self.default_config = {
             "prompt_template": """You are a helpful AI assistant. Use the following pieces of context to answer the question at the end. 
-            If you don't know the answer, just say that you don't know, don't try to make up an answer.
+If you don't know the answer, just say that you don't know, don't try to make up an answer.
 
-            Context: {context}
+{context}
 
-            Human: {question}
-
-            Assistant: """
+{question}"""
         }
         self.config = self.load_config()
 
