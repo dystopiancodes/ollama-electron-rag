@@ -1,5 +1,3 @@
-# backend/app/file_watcher.py
-
 import time
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -24,6 +22,11 @@ class DocumentHandler(FileSystemEventHandler):
             logger.debug(f"File modified: {event.src_path}")
             self._process_file(event.src_path)
 
+    def on_deleted(self, event):
+        if not event.is_directory:
+            logger.debug(f"File deleted: {event.src_path}")
+            self._remove_file_from_db(event.src_path)
+
     def _process_file(self, file_path):
         try:
             logger.debug(f"Starting to process file: {file_path}")
@@ -34,6 +37,15 @@ class DocumentHandler(FileSystemEventHandler):
             logger.debug(f"Processed and added to database: {file_path}")
         except Exception as e:
             logger.error(f"Error processing file {file_path}: {str(e)}")
+
+    def _remove_file_from_db(self, file_path):
+        try:
+            filename = os.path.basename(file_path)
+            logger.debug(f"Removing file from database: {filename}")
+            self.db_manager.remove_documents({"source": filename})
+            logger.debug(f"Removed from database: {filename}")
+        except Exception as e:
+            logger.error(f"Error removing file {file_path} from database: {str(e)}")
 
 class FileWatcher:
     def __init__(self, path_to_watch, document_processor, db_manager):

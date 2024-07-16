@@ -1,5 +1,3 @@
-# backend/app/db_manager.py
-
 import os
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import Chroma
@@ -22,7 +20,13 @@ class DBManager:
     def similarity_search(self, query, k=4):
         return self.db.similarity_search(query, k=k)
 
-# Usage example:
-# db_manager = DBManager("path/to/persist/directory")
-# db_manager.add_texts(["Some text"], [{"source": "document1.pdf"}])
-# results = db_manager.similarity_search("query")
+    def remove_documents(self, metadata_filter):
+        self.db._collection.delete(where=metadata_filter)
+        self.db.persist()
+
+    def get_all_documents(self):
+        return self.db.get()
+
+    def get_all_sources(self):
+        results = self.db.get()
+        return set([meta.get('source') for meta in results['metadatas'] if meta.get('source')])
