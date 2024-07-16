@@ -11,7 +11,12 @@ import Link from '@mui/material/Link';
 import CircularProgress from '@mui/material/CircularProgress';
 import Snackbar from '@mui/material/Snackbar';
 import Alert from '@mui/material/Alert';
-
+import IconButton from '@mui/material/IconButton';
+import SettingsIcon from '@mui/icons-material/Settings';
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import DialogTitle from '@mui/material/DialogTitle';
 
 const theme = createTheme({
   palette: {
@@ -27,9 +32,24 @@ function App() {
   const [answer, setAnswer] = useState('');
   const [sources, setSources] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const answerRef = useRef(null);
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'info' });
+  const [configOpen, setConfigOpen] = useState(false);
+  const [promptTemplate, setPromptTemplate] = useState('');
+  const answerRef = useRef(null);
 
+  useEffect(() => {
+    fetchConfig();
+  }, []);
+
+  const fetchConfig = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/config');
+      const data = await response.json();
+      setPromptTemplate(data.prompt_template);
+    } catch (error) {
+      console.error('Error fetching config:', error);
+    }
+  };
 
   const handleQuery = async (e) => {
     e.preventDefault();
@@ -77,12 +97,6 @@ function App() {
     }
   };
 
-  useEffect(() => {
-    if (answerRef.current) {
-      answerRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [answer]);
-
   const handleSourceClick = (filename) => {
     console.log('Attempting to open file:', filename);
     if (window.electron && window.electron.openFile) {
@@ -120,14 +134,82 @@ function App() {
     setSnackbar({ ...snackbar, open: false });
   };
 
+  const handleConfigOpen = () => {
+    setConfigOpen(true);
+  };
+
+  const handleConfigClose = () => {
+    setConfigOpen(false);
+  };
+
+  const handleConfigSave = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/config', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ template: promptTemplate }),
+      });
+      if (response.ok) {
+        setSnackbar({
+          open: true,
+          message: 'Config saved successfully',
+          severity: 'success'
+        });
+      } else {
+        throw new Error('Failed to save config');
+      }
+    } catch (error) {
+      console.error('Error saving config:', error);
+      setSnackbar({
+        open: true,
+        message: 'Error saving config',
+        severity: 'error'
+      });
+    }
+    handleConfigClose();
+  };
+
+  const handleConfigReset = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/config/reset', {
+        method: 'POST',
+      });
+      if (response.ok) {
+        await fetchConfig();
+        setSnackbar({
+          open: true,
+          message: 'Config reset to default',
+          severity: 'success'
+        });
+      } else {
+        throw new Error('Failed to reset config');
+      }
+    } catch (error) {
+      console.error('Error resetting config:', error);
+      setSnackbar({
+        open: true,
+        message: 'Error resetting config',
+        severity: 'error'
+      });
+    }
+  };
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Container maxWidth="md">
-        <Box sx={{ my: 4 }}>
+        <Box sx={{ my: 4, position: 'relative' }}>
           <Typography variant="h4" component="h1" gutterBottom>
             Local RAG App
           </Typography>
+          <IconButton
+            sx={{ position: 'absolute', top: 0, right: 0 }}
+            onClick={handleConfigOpen}
+          >
+            <SettingsIcon />
+          </IconButton>
           <form onSubmit={handleQuery}>
             <TextField
               fullWidth
@@ -172,6 +254,28 @@ function App() {
             </Box>
           )}
         </Box>
+        <Dialog open={configOpen} onClose={handleConfigClose}>
+          <DialogTitle>Configuration</DialogTitle>
+          <DialogContent>
+            <TextField
+              autoFocus
+              margin="dense"
+              label="Prompt Template"
+              type="text"
+              fullWidth
+              multiline
+              rows={4}
+              variant="outlined"
+              value={promptTemplate}
+              onChange={(e) => setPromptTemplate(e.target.value)}
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={handleConfigReset}>Reset to Default</Button>
+            <Button onClick={handleConfigClose}>Cancel</Button>
+            <Button onClick={handleConfigSave}>Save</Button>
+          </DialogActions>
+        </Dialog>
         <Snackbar open={snackbar.open} autoHideDuration={6000} onClose={handleCloseSnackbar}>
           <Alert onClose={handleCloseSnackbar} severity={snackbar.severity} sx={{ width: '100%' }}>
             {snackbar.message}

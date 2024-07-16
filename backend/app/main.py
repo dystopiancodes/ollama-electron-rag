@@ -4,6 +4,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from .components import document_processor, db_manager, documents_dir
 from .file_watcher import FileWatcher
+from .conf import config
 import threading
 import logging
 from langchain.prompts import PromptTemplate
@@ -27,21 +28,11 @@ logger.debug("File watcher thread started")
 # Initialize Ollama LLM
 llm = Ollama(model="mistral")
 
-# Define prompt template
-prompt_template = PromptTemplate(
-    input_variables=["context", "question"],
-    template="""You are a helpful AI assistant. Use the following pieces of context to answer the question at the end. 
-    If you don't know the answer, just say that you don't know, don't try to make up an answer.
-
-    Context: {context}
-
-    Human: {question}
-
-    Assistant: """
-)
-
 class Query(BaseModel):
     text: str
+
+class PromptTemplateUpdate(BaseModel):
+    template: str
 
 def cleanup_database():
     logger.info("Starting database cleanup")
@@ -81,7 +72,11 @@ async def query_stream(query: str):
         # Prepare context
         context = "\n".join([doc.page_content for doc in docs])
         
-        # Generate prompt
+        # Generate prompt using the current template from config
+        prompt_template = PromptTemplate(
+            input_variables=["context", "question"],
+            template=config.get_prompt_template()
+        )
         prompt = prompt_template.format(context=context, question=query)
         
         # Generate response using LLM
@@ -119,6 +114,20 @@ async def refresh_documents():
     except Exception as e:
         logger.error(f"Error refreshing documents: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/config")
+async def get_config():
+    return {"prompt_template": config.get_prompt_template()}
+
+@app.post("/config")
+async def update_config(prompt_template: PromptTemplateUpdate):
+    config.set_prompt_template(prompt_template.template)
+    return {"message": "Config updated successfully"}
+
+@app.post("/config/reset")
+async def reset_config():
+    config.reset_to_default()
+    return {"message": "Config reset to default"}
 
 @app.get("/")
 async def root():
