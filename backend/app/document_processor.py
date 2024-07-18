@@ -27,23 +27,28 @@ class DocumentProcessor:
         tree = ET.parse(file_path)
         root = tree.getroot()
 
-        text = self._xml_to_text(root)
+        text = "\n".join(self._xml_to_text(root))
         return self.text_splitter.split_text(text)
 
-    def _xml_to_text(self, element, indent=''):
-        """Recursively convert XML element to text."""
-        text = f"{indent}{element.tag}:"
-        
-        if element.text and element.text.strip():
-            text += f" {element.text.strip()}\n"
+    def _xml_to_text(self, element, path=''):
+        """Recursively convert XML element to text, including the element path."""
+        text = []
+        current_path = f"{path}/{element.tag}" if path else element.tag
+
+        # Add attributes if any
+        if element.attrib:
+            attrs = ", ".join(f"{k}={v}" for k, v in element.attrib.items())
+            text.append(f"{current_path} ({attrs})")
         else:
-            text += "\n"
+            text.append(current_path)
 
+        # Add text content if any
+        if element.text and element.text.strip():
+            text.append(f"{current_path}: {element.text.strip()}")
+
+        # Process child elements
         for child in element:
-            text += self._xml_to_text(child, indent + '  ')
-
-        if element.tail and element.tail.strip():
-            text += f"{indent}{element.tail.strip()}\n"
+            text.extend(self._xml_to_text(child, current_path))
 
         return text
 
@@ -56,6 +61,7 @@ class DocumentProcessor:
             return self.process_xml(file_path)
         else:
             raise ValueError(f"Unsupported file type: {ext}")
+
 
 # Usage example:
 # processor = DocumentProcessor()

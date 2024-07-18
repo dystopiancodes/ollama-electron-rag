@@ -17,6 +17,7 @@ import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
+import LinearProgress from '@mui/material/LinearProgress';
 
 const theme = createTheme({
   palette: {
@@ -36,6 +37,9 @@ function App() {
   const [configOpen, setConfigOpen] = useState(false);
   const [promptTemplate, setPromptTemplate] = useState('');
   const answerRef = useRef(null);
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetProgress, setResetProgress] = useState({ progress: 0, current: 0, total: 0 });
+
 
   useEffect(() => {
     fetchConfig();
@@ -206,6 +210,54 @@ function App() {
     }
   };
 
+
+  const handleResetAndRescan = async () => {
+    setIsResetting(true);
+    setResetProgress({ progress: 0, current: 0, total: 0 });
+    try {
+      const response = await fetch('http://localhost:8000/reset-and-rescan', {
+        method: 'POST',
+      });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+        lines.forEach(line => {
+          if (line) {
+            const data = JSON.parse(line);
+            if (data.status === 'Processing') {
+              setResetProgress({
+                progress: parseFloat(data.progress),
+                current: data.current,
+                total: data.total
+              });
+            } else if (data.status === 'Completed') {
+              setSnackbar({
+                open: true,
+                message: 'Reset and rescan completed successfully',
+                severity: 'success'
+              });
+            }
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error during reset and rescan:', error);
+      setSnackbar({
+        open: true,
+        message: 'Error during reset and rescan',
+        severity: 'error'
+      });
+    } finally {
+      setIsResetting(false);
+    }
+  };
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
@@ -283,6 +335,24 @@ function App() {
               value={promptTemplate}
               onChange={(e) => setPromptTemplate(e.target.value)}
             />
+            <Box mt={2}>
+              <Button
+                onClick={handleResetAndRescan}
+                variant="contained"
+                color="secondary"
+                disabled={isResetting}
+              >
+                {isResetting ? 'Resetting...' : 'Reset DB and Rescan Documents'}
+              </Button>
+            </Box>
+            {isResetting && (
+              <Box mt={2}>
+                <LinearProgress variant="determinate" value={resetProgress.progress} />
+                <Typography variant="body2" color="textSecondary">
+                  {`${resetProgress.progress.toFixed(2)}% - ${resetProgress.current} of ${resetProgress.total} documents processed`}
+                </Typography>
+              </Box>
+            )}
           </DialogContent>
           <DialogActions>
             <Button onClick={handleConfigReset}>Reset to Default</Button>

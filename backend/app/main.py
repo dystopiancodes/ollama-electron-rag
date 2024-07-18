@@ -130,6 +130,60 @@ async def reset_config():
     config.reset_to_default()
     return {"message": "Config reset to default"}
 
+
+from .db_manager import is_valid_document
+
+
+@app.post("/reset-and-rescan")
+async def reset_and_rescan():
+    async def rescan_generator():
+        try:
+            # Clear the existing database
+            db_manager.clear_database()
+            yield json.dumps({"status": "Database cleared"}) + "\n"
+
+            # Get list of valid documents
+            documents = [f for f in os.listdir(documents_dir) 
+                         if os.path.isfile(os.path.join(documents_dir, f)) and is_valid_document(f)]
+            total_documents = len(documents)
+            logger.info(f"Found {total_documents} valid documents to process")
+
+            for index, filename in enumerate(documents, start=1):
+                try:
+                    file_path = os.path.join(documents_dir, filename)
+                    logger.info(f"Processing file {index}/{total_documents}: {filename}")
+                    chunks = document_processor.process_file(file_path)
+                    logger.info(f"File {filename} processed into {len(chunks)} chunks")
+                    metadata = [{"source": filename} for _ in chunks]
+                    db_manager.add_texts(chunks, metadata)
+                    logger.info(f"Added {len(chunks)} chunks from {filename} to the database")
+                    
+                    progress = (index / total_documents) * 100
+                    yield json.dumps({
+                        "status": "Processing",
+                        "progress": f"{progress:.2f}%",
+                        "current": index,
+                        "total": total_documents
+                    }) + "\n"
+                except Exception as e:
+                    logger.error(f"Error processing file {filename}: {str(e)}")
+                    yield json.dumps({
+                        "status": "Error",
+                        "file": filename,
+                        "error": str(e)
+                    }) + "\n"
+
+            logger.info("Document processing completed")
+            yield json.dumps({"status": "Completed"}) + "\n"
+        except Exception as e:
+            logger.error(f"Error during rescan: {str(e)}")
+            yield json.dumps({"error": str(e)}) + "\n"
+
+    return StreamingResponse(rescan_generator(), media_type="application/json")
+
+
+
+
 @app.get("/")
 async def root():
     return {"message": "Local RAG App Backend is running"}
