@@ -5,14 +5,20 @@ class Config:
     def __init__(self, config_file='config.json'):
         self.config_file = config_file
         self.default_config = {
-            "prompt_template": """You are a helpful AI assistant. Use the following pieces of context to answer the question at the end. 
-If you don't know the answer, just say that you don't know, don't try to make up an answer.
+            "prompt_template": """Sei un assistente AI che risponde in italiano. Utilizza le seguenti informazioni di contesto per rispondere alla domanda. 
+Rispondi in modo conciso e diretto, senza spiegare il tuo ragionamento. Usa solo la lingua italiana.
+Se non conosci la risposta, rispondi semplicemente "Non ho informazioni sufficienti per rispondere a questa domanda."
 
+Contesto:
 {context}
 
-{question}"""
+Domanda: {question}
+
+Risposta concisa in italiano:"""
         }
+        
         self.config = self.load_config()
+
 
     def load_config(self):
         if os.path.exists(self.config_file):

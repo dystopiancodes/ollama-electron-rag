@@ -11,22 +11,31 @@ from langchain.prompts import PromptTemplate
 from langchain_community.llms import Ollama
 import json
 import asyncio
+from langchain.schema import HumanMessage, SystemMessage
 
-logging.basicConfig(level=logging.DEBUG)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("chromadb").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+# Suppress noisy loggers
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = FastAPI()
 
-logger.debug(f"Documents directory: {documents_dir}")
+logger.info(f"Documents directory: {documents_dir}")
 
 # Start file watcher in a separate thread
 file_watcher = FileWatcher(documents_dir, document_processor, db_manager)
 watcher_thread = threading.Thread(target=file_watcher.run, daemon=True)
 watcher_thread.start()
-logger.debug("File watcher thread started")
+logger.info("File watcher thread started")
 
 # Initialize Ollama LLM
-llm = Ollama(model="mistral")
+#llm = Ollama(model="mistral")
+llm = Ollama(model="orca2")
 
 class Query(BaseModel):
     text: str
@@ -37,18 +46,13 @@ class PromptTemplateUpdate(BaseModel):
 def cleanup_database():
     logger.info("Starting database cleanup")
     try:
-        # Get the current list of files in the documents directory
         current_files = set([f for f in os.listdir(documents_dir) if os.path.isfile(os.path.join(documents_dir, f))])
-        
-        # Get the list of documents in the database
         db_documents = db_manager.get_all_sources()
         
-        # Remove documents from the database that no longer exist in the directory
         for doc in db_documents - current_files:
             logger.info(f"Removing document from database: {doc}")
             db_manager.remove_documents({"source": doc})
         
-        # Add new documents to the database
         for file in current_files - db_documents:
             logger.info(f"Adding new document to database: {file}")
             file_path = os.path.join(documents_dir, file)
@@ -66,28 +70,25 @@ async def startup_event():
 
 async def query_stream(query: str):
     try:
-        # Retrieve relevant documents
         docs = db_manager.similarity_search(query, k=3)
-        
-        # Prepare context
         context = "\n".join([doc.page_content for doc in docs])
-        
-        # Generate prompt using the current template from config
         prompt_template = PromptTemplate(
             input_variables=["context", "question"],
             template=config.get_prompt_template()
         )
         prompt = prompt_template.format(context=context, question=query)
         
-        # Generate response using LLM
+        system_message = "Sei un assistente AI che risponde solo in italiano. Fornisci risposte brevi e concise, senza spiegazioni o ragionamenti. Usa solo la lingua italiana."
+        full_prompt = f"{system_message}\n\n{prompt}"
+
         response = ""
-        sources = list(set([doc.metadata.get("source") for doc in docs]))  # Unique sources
+        sources = list(set([doc.metadata.get("source") for doc in docs]))
         yield json.dumps({"sources": sources}) + "\n"
 
-        for chunk in llm.stream(prompt):
+        for chunk in llm.stream(full_prompt):
             response += chunk
             yield json.dumps({"answer": chunk}) + "\n"
-            await asyncio.sleep(0.1)  # Small delay to simulate streaming
+            await asyncio.sleep(0.1)
         
     except Exception as e:
         logger.error(f"Error during query: {str(e)}")
@@ -100,7 +101,7 @@ async def query_documents(query: Query):
 @app.get("/documents")
 async def list_documents():
     try:
-        documents = [f for f in os.listdir(documents_dir) if os.path.isfile(os.path.join(documents_dir, f))]
+        documents = [f for f in os.listdir(documents_dir) if os.path.isfile(os.path.join(documents_dir, f)) and f.lower().endswith(('.pdf', '.xml'))]
         return {"documents": documents}
     except Exception as e:
         logger.error(f"Error listing documents: {str(e)}")
