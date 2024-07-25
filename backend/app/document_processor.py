@@ -1,3 +1,6 @@
+# backend/app/document_processor.py
+
+
 import os
 import pdfplumber
 from langchain_text_splitters import RecursiveCharacterTextSplitter
