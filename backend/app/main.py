@@ -20,8 +20,8 @@ from .conf import config
 from .utils import is_valid_document
 
 # Configure logging
-#logging.basicConfig(level=logging.INFO)
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
+#ogging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Suppress noisy loggers
@@ -125,6 +125,7 @@ async def query_stream(query: str):
     try:
         docs = db_manager.similarity_search(query, k=3)
         context = "\n".join([doc.page_content for doc in docs])
+        logger.info(context)
         
         prompt = config.get_prompt_template().format(context=context, question=query)
 

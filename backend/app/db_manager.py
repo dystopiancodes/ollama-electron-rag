@@ -71,8 +71,17 @@ class DBManager:
     def clear_database(self):
         logger.info("Clearing database...")
         try:
-            self.db._collection.delete(where={})
-            self.db.persist()
+            # Get all document IDs
+            all_ids = self.db.get()['ids']
+            
+            # Delete all documents
+            if all_ids:
+                self.db._collection.delete(ids=all_ids)
+                self.db.persist()
+                logger.info(f"Deleted {len(all_ids)} documents from the database")
+            else:
+                logger.info("No documents to delete. Database is already empty.")
+            
             logger.info("Database cleared and changes persisted")
         except Exception as e:
             logger.error(f"Error clearing database: {str(e)}")
