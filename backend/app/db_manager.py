@@ -1,4 +1,3 @@
-import os
 import logging
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import Chroma
@@ -9,14 +8,12 @@ logger = logging.getLogger(__name__)
 
 class DBManager:
     def __init__(self, persist_directory):
-        self.persist_directory = os.path.abspath(persist_directory)
+        self.persist_directory = persist_directory
         self.embeddings = OllamaEmbeddings(model="nomic-embed-text")
         self.db = self._load_or_create_db()
 
     def _load_or_create_db(self):
         try:
-            os.makedirs(self.persist_directory, exist_ok=True)
-            
             db = Chroma(
                 persist_directory=self.persist_directory,
                 embedding_function=self.embeddings,
@@ -25,40 +22,10 @@ class DBManager:
                     is_persistent=True
                 )
             )
-            
             logger.info(f"Database loaded from or created in: {self.persist_directory}")
             return db
         except Exception as e:
             logger.error(f"Error creating/loading database: {str(e)}")
-            raise
-
-    def add_texts(self, texts, metadatas=None):
-        try:
-            # Validate and clean the input data
-            valid_texts = []
-            valid_metadatas = []
-            for i, item in enumerate(texts):
-                if isinstance(item, tuple):
-                    text, metadata = item
-                else:
-                    text = item
-                    metadata = metadatas[i] if metadatas else None
-
-                if text is not None and isinstance(text, str) and text.strip() != "":
-                    valid_texts.append(text)
-                    valid_metadatas.append(metadata)
-                else:
-                    logger.warning(f"Skipping invalid text at index {i}")
-
-            if not valid_texts:
-                logger.warning("No valid texts to add to the database")
-                return
-
-            self.db.add_texts(valid_texts, metadatas=valid_metadatas)
-            self.db.persist()
-            logger.info(f"Added {len(valid_texts)} texts to the database and persisted changes")
-        except Exception as e:
-            logger.error(f"Error adding texts to database: {str(e)}")
             raise
 
     def similarity_search(self, query, k=4):
@@ -67,7 +34,13 @@ class DBManager:
             results = self.db.similarity_search(query, k=k)
             logger.info(f"Similarity search returned {len(results)} results")
             
-            valid_results = [doc for doc in results if doc.page_content is not None and doc.page_content.strip() != ""]
+            valid_results = []
+            for i, doc in enumerate(results):
+                if doc.page_content is None:
+                    logger.warning(f"Document at index {i} has None page_content")
+                else:
+                    valid_results.append(doc)
+                    logger.debug(f"Document {i}: {doc.page_content[:100]}...")  # Log first 100 chars
             
             if not valid_results:
                 logger.warning("No valid results found after filtering")
@@ -78,6 +51,7 @@ class DBManager:
         except Exception as e:
             logger.error(f"Error during similarity search: {str(e)}", exc_info=True)
             return [Document(page_content=f"An error occurred during the search: {str(e)}", metadata={})]
+
 
 
 

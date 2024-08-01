@@ -61,8 +61,9 @@ db_manager = DBManager("./data/db")
 # Initialize Ollama LLM
 llm = Ollama(model="llama3.1")
 
-class Query(BaseModel):
+class QueryInput(BaseModel):
     text: str
+    k: int = 10  # Default value is 3
 
 class PromptTemplateUpdate(BaseModel):
     template: str
@@ -121,21 +122,33 @@ async def get_db_state():
         logger.error(f"Error getting database state: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))    
 
-async def query_stream(query: str):
+async def query_stream(query: str, k: int):
     try:
-        logger.info(f"Received query: {query}")
-        docs = db_manager.similarity_search(query, k=3)
+        logger.info(f"Received query: {query}, k={k}")
+        yield json.dumps({"debug": f"Received query: {query}, k={k}"}) + "\n"
+
+        docs = db_manager.similarity_search(query, k=k)
         logger.info(f"Similarity search returned {len(docs)} documents")
-        
+        yield json.dumps({"debug": f"Similarity search returned {len(docs)} documents"}) + "\n"
+
+        if not docs or (len(docs) == 1 and "An error occurred during the search" in docs[0].page_content):
+            error_message = docs[0].page_content if docs else "No documents found"
+            logger.error(f"Error in similarity search: {error_message}")
+            yield json.dumps({"error": error_message}) + "\n"
+            return
+
         context = "\n".join([doc.page_content for doc in docs])
-        logger.debug(f"Context: {context}")
-        
+        logger.debug(f"Context: {context[:500]}...")  # Log first 500 chars of context
+        yield json.dumps({"debug": f"Context: {context[:500]}..."}) + "\n"
+
         sources = list(set([doc.metadata.get("source", "Unknown") for doc in docs]))
         logger.info(f"Sources: {sources}")
         yield json.dumps({"sources": sources}) + "\n"
 
         prompt = config.get_prompt_template().format(context=context, question=query)
-        logger.debug(f"Generated prompt: {prompt}")
+        logger.debug(f"Generated prompt: {prompt[:500]}...")  # Log first 500 chars of prompt
+        yield json.dumps({"debug": f"Generated prompt: {prompt[:500]}..."}) + "\n"
+
 
         response = ""
         for chunk in llm.stream(prompt):
@@ -146,16 +159,18 @@ async def query_stream(query: str):
         if not response.strip():
             logger.warning("No response generated")
             yield json.dumps({"answer": "Mi dispiace, non ho trovato una risposta adeguata basata sul contesto fornito."}) + "\n"
+            yield json.dumps({"debug": "No response generated"}) + "\n"
         else:
             logger.info("Response generated successfully")
+            yield json.dumps({"debug": "Response generated successfully"}) + "\n"
         
     except Exception as e:
-        logger.error(f"Error during query: {str(e)}", exc_info=True)
+        logger.error(f"Error during query processing: {str(e)}", exc_info=True)
         yield json.dumps({"error": f"Si è verificato un errore durante l'elaborazione della query: {str(e)}"}) + "\n"
 
 @app.post("/query")
-async def query_documents(query: Query):
-    return StreamingResponse(query_stream(query.text), media_type="application/json")
+async def query_documents(query_input: QueryInput):
+    return StreamingResponse(query_stream(query_input.text, query_input.k), media_type="application/json")
 
 
 
