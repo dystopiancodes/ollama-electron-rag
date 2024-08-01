@@ -3,6 +3,7 @@ import logging
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import Chroma
 from chromadb.config import Settings
+from langchain.schema import Document
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +15,8 @@ class DBManager:
 
     def _load_or_create_db(self):
         try:
-            # Ensure the persist directory exists
             os.makedirs(self.persist_directory, exist_ok=True)
             
-            # Create or load the Chroma database
             db = Chroma(
                 persist_directory=self.persist_directory,
                 embedding_function=self.embeddings,
@@ -28,7 +27,6 @@ class DBManager:
             )
             
             logger.info(f"Database loaded from or created in: {self.persist_directory}")
-            logger.info(f"Chroma is storing files in: {self.persist_directory}")
             return db
         except Exception as e:
             logger.error(f"Error creating/loading database: {str(e)}")
@@ -36,24 +34,52 @@ class DBManager:
 
     def add_texts(self, texts, metadatas=None):
         try:
-            self.db.add_texts(texts, metadatas=metadatas)
+            # Validate and clean the input data
+            valid_texts = []
+            valid_metadatas = []
+            for i, item in enumerate(texts):
+                if isinstance(item, tuple):
+                    text, metadata = item
+                else:
+                    text = item
+                    metadata = metadatas[i] if metadatas else None
+
+                if text is not None and isinstance(text, str) and text.strip() != "":
+                    valid_texts.append(text)
+                    valid_metadatas.append(metadata)
+                else:
+                    logger.warning(f"Skipping invalid text at index {i}")
+
+            if not valid_texts:
+                logger.warning("No valid texts to add to the database")
+                return
+
+            self.db.add_texts(valid_texts, metadatas=valid_metadatas)
             self.db.persist()
-            logger.info(f"Added {len(texts)} texts to the database and persisted changes")
+            logger.info(f"Added {len(valid_texts)} texts to the database and persisted changes")
         except Exception as e:
             logger.error(f"Error adding texts to database: {str(e)}")
             raise
 
     def similarity_search(self, query, k=4):
-        return self.db.similarity_search(query, k=k)
-
-    def remove_documents(self, metadata_filter):
         try:
-            self.db._collection.delete(where=metadata_filter)
-            self.db.persist()
-            logger.info(f"Documents removed with filter: {metadata_filter} and changes persisted")
+            logger.info(f"Performing similarity search for query: {query}")
+            results = self.db.similarity_search(query, k=k)
+            logger.info(f"Similarity search returned {len(results)} results")
+            
+            valid_results = [doc for doc in results if doc.page_content is not None and doc.page_content.strip() != ""]
+            
+            if not valid_results:
+                logger.warning("No valid results found after filtering")
+                return [Document(page_content="No relevant information found.", metadata={})]
+            
+            logger.info(f"Returning {len(valid_results)} valid results")
+            return valid_results
         except Exception as e:
-            logger.error(f"Error removing documents: {str(e)}")
-            raise
+            logger.error(f"Error during similarity search: {str(e)}", exc_info=True)
+            return [Document(page_content=f"An error occurred during the search: {str(e)}", metadata={})]
+
+
 
     def get_all_sources(self):
         try:
@@ -71,10 +97,8 @@ class DBManager:
     def clear_database(self):
         logger.info("Clearing database...")
         try:
-            # Get all document IDs
             all_ids = self.db.get()['ids']
             
-            # Delete all documents
             if all_ids:
                 self.db._collection.delete(ids=all_ids)
                 self.db.persist()

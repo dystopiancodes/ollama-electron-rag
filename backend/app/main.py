@@ -57,7 +57,7 @@ file_watcher = FileWatcher(DOCUMENTS_DIR, document_processor, db_manager)
 watcher_thread = threading.Thread(target=file_watcher.run, daemon=True)
 watcher_thread.start()
 logger.info("File watcher thread started")
-
+db_manager = DBManager("./data/db")
 # Initialize Ollama LLM
 llm = Ollama(model="llama3.1")
 
@@ -123,14 +123,19 @@ async def get_db_state():
 
 async def query_stream(query: str):
     try:
+        logger.info(f"Received query: {query}")
         docs = db_manager.similarity_search(query, k=3)
-        context = "\n".join([doc.page_content for doc in docs])
-        logger.info(context)
+        logger.info(f"Similarity search returned {len(docs)} documents")
         
-        prompt = config.get_prompt_template().format(context=context, question=query)
-
-        sources = list(set([doc.metadata.get("source") for doc in docs]))
+        context = "\n".join([doc.page_content for doc in docs])
+        logger.debug(f"Context: {context}")
+        
+        sources = list(set([doc.metadata.get("source", "Unknown") for doc in docs]))
+        logger.info(f"Sources: {sources}")
         yield json.dumps({"sources": sources}) + "\n"
+
+        prompt = config.get_prompt_template().format(context=context, question=query)
+        logger.debug(f"Generated prompt: {prompt}")
 
         response = ""
         for chunk in llm.stream(prompt):
@@ -139,15 +144,20 @@ async def query_stream(query: str):
             await asyncio.sleep(0.1)
         
         if not response.strip():
+            logger.warning("No response generated")
             yield json.dumps({"answer": "Mi dispiace, non ho trovato una risposta adeguata basata sul contesto fornito."}) + "\n"
+        else:
+            logger.info("Response generated successfully")
         
     except Exception as e:
-        logger.error(f"Error during query: {str(e)}")
-        yield json.dumps({"error": str(e)}) + "\n"
+        logger.error(f"Error during query: {str(e)}", exc_info=True)
+        yield json.dumps({"error": f"Si è verificato un errore durante l'elaborazione della query: {str(e)}"}) + "\n"
 
 @app.post("/query")
 async def query_documents(query: Query):
     return StreamingResponse(query_stream(query.text), media_type="application/json")
+
+
 
 @app.get("/documents")
 async def list_documents():
@@ -183,50 +193,20 @@ async def reset_config():
 
 @app.post("/reset-and-rescan")
 async def reset_and_rescan():
-    async def rescan_generator():
-        try:
-            # Clear the existing database
-            db_manager.clear_database()
-            yield json.dumps({"status": "Database cleared"}) + "\n"
+    try:
+        db_manager.clear_database()
+        documents_dir = "./data/documents"
+        for filename in os.listdir(documents_dir):
+            if filename.endswith(('.pdf', '.xml')):
+                file_path = os.path.join(documents_dir, filename)
+                logger.info(f"Processing file: {filename}")
+                chunks = document_processor.process_file(file_path)
+                db_manager.add_texts(chunks)
+        return {"message": "Reset and rescan completed successfully"}
+    except Exception as e:
+        logger.error(f"Error during reset and rescan: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-            # Get list of valid documents
-            documents = [f for f in os.listdir(DOCUMENTS_DIR) 
-                         if os.path.isfile(os.path.join(DOCUMENTS_DIR, f)) and is_valid_document(f)]
-            total_documents = len(documents)
-            logger.info(f"Found {total_documents} valid documents to process")
-
-            for index, filename in enumerate(documents, start=1):
-                try:
-                    file_path = os.path.join(DOCUMENTS_DIR, filename)
-                    logger.info(f"Processing file {index}/{total_documents}: {filename}")
-                    chunks = document_processor.process_file(file_path)
-                    logger.info(f"File {filename} processed into {len(chunks)} chunks")
-                    metadata = [{"source": filename} for _ in chunks]
-                    db_manager.add_texts(chunks, metadata)
-                    logger.info(f"Added {len(chunks)} chunks from {filename} to the database")
-                    
-                    progress = (index / total_documents) * 100
-                    yield json.dumps({
-                        "status": "Processing",
-                        "progress": f"{progress:.2f}%",
-                        "current": index,
-                        "total": total_documents
-                    }) + "\n"
-                except Exception as e:
-                    logger.error(f"Error processing file {filename}: {str(e)}")
-                    yield json.dumps({
-                        "status": "Error",
-                        "file": filename,
-                        "error": str(e)
-                    }) + "\n"
-
-            logger.info("Document processing completed")
-            yield json.dumps({"status": "Completed"}) + "\n"
-        except Exception as e:
-            logger.error(f"Error during rescan: {str(e)}")
-            yield json.dumps({"error": str(e)}) + "\n"
-
-    return StreamingResponse(rescan_generator(), media_type="application/json")
 
 @app.get("/")
 async def root():
