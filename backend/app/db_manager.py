@@ -52,6 +52,34 @@ class DBManager:
             logger.error(f"Error during similarity search: {str(e)}", exc_info=True)
             return [Document(page_content=f"An error occurred during the search: {str(e)}", metadata={})]
 
+    def add_texts(self, texts, metadatas=None):
+        try:
+            # Validate and clean the input data
+            valid_texts = []
+            valid_metadatas = []
+            for i, item in enumerate(texts):
+                if isinstance(item, tuple):
+                    text, metadata = item
+                else:
+                    text = item
+                    metadata = metadatas[i] if metadatas else None
+
+                if text is not None and isinstance(text, str) and text.strip() != "":
+                    valid_texts.append(text)
+                    valid_metadatas.append(metadata)
+                else:
+                    logger.warning(f"Skipping invalid text at index {i}")
+
+            if not valid_texts:
+                logger.warning("No valid texts to add to the database")
+                return
+
+            self.db.add_texts(valid_texts, metadatas=valid_metadatas)
+            self.db.persist()
+            logger.info(f"Added {len(valid_texts)} texts to the database and persisted changes")
+        except Exception as e:
+            logger.error(f"Error adding texts to database: {str(e)}")
+            raise
 
 
 
@@ -83,4 +111,13 @@ class DBManager:
             logger.info("Database cleared and changes persisted")
         except Exception as e:
             logger.error(f"Error clearing database: {str(e)}")
+            raise
+    
+    def remove_documents(self, metadata_filter):
+        try:
+            self.db._collection.delete(where=metadata_filter)
+            self.db.persist()
+            logger.info(f"Documents removed with filter: {metadata_filter} and changes persisted")
+        except Exception as e:
+            logger.error(f"Error removing documents: {str(e)}")
             raise

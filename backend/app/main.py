@@ -63,7 +63,7 @@ llm = Ollama(model="llama3.1")
 
 class QueryInput(BaseModel):
     text: str
-    k: int = 10  # Default value is 3
+    k: int = 5  # Default value is 3
 
 class PromptTemplateUpdate(BaseModel):
     template: str
