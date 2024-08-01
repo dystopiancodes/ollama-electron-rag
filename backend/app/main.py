@@ -138,16 +138,20 @@ async def query_stream(query: str, k: int):
             return
 
         context = "\n".join([doc.page_content for doc in docs])
-        logger.debug(f"Context: {context[:500]}...")  # Log first 500 chars of context
-        yield json.dumps({"debug": f"Context: {context[:500]}..."}) + "\n"
+        #logger.debug(f"Full Context: {context}")
+        #yield json.dumps({"debug": f"Full Context: {context}"}) + "\n"
 
-        sources = list(set([doc.metadata.get("source", "Unknown") for doc in docs]))
-        logger.info(f"Sources: {sources}")
-        yield json.dumps({"sources": sources}) + "\n"
+        sources = [doc.metadata.get("source", "Unknown") for doc in docs]
+        unique_sources = list(set(sources))
+        logger.info(f"All sources: {sources}")
+        logger.info(f"Unique sources: {unique_sources}")
+        yield json.dumps({"debug": f"All sources: {sources}"}) + "\n"
+        yield json.dumps({"debug": f"Unique sources: {unique_sources}"}) + "\n"
+        yield json.dumps({"sources": unique_sources}) + "\n"
 
         prompt = config.get_prompt_template().format(context=context, question=query)
-        logger.debug(f"Generated prompt: {prompt[:500]}...")  # Log first 500 chars of prompt
-        yield json.dumps({"debug": f"Generated prompt: {prompt[:500]}..."}) + "\n"
+        logger.debug(f"Full Generated prompt: {prompt}")
+        yield json.dumps({"debug": f"Full Generated prompt: {prompt}"}) + "\n"
 
 
         response = ""
