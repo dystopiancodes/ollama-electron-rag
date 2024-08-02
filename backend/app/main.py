@@ -233,7 +233,7 @@ async def periodic_refresh():
 @app.on_event("startup")
 async def startup_event():
     cleanup_database()
-    asyncio.create_task(periodic_refresh())
+    #asyncio.create_task(periodic_refresh())
 
 @app.get("/")
 async def root():
