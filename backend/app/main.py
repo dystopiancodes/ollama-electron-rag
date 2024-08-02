@@ -59,7 +59,7 @@ watcher_thread.start()
 logger.info("File watcher thread started")
 db_manager = DBManager("./data/db")
 # Initialize Ollama LLM
-llm = Ollama(model="llama3.1")
+llm = Ollama(model="mistral:latest")
 
 class QueryInput(BaseModel):
     text: str

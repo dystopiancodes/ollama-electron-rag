@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # Navigate to the directory containing the Python files (if necessary)
-cd app
 
 # Combine all Python files into a single file
 for file in *.py; do
