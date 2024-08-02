@@ -1,12 +1,9 @@
-# backend/app/main.py
-
-
 import os
 import threading
 import json
 import asyncio
 import logging
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ValidationError
@@ -15,20 +12,16 @@ from langchain_community.llms import Ollama
 import subprocess
 
 # Import custom modules
+from . import globals
 from .document_processor import DocumentProcessor
 from .db_manager import DBManager
 from .file_watcher import FileWatcher
 from .conf import config
 from .utils import is_valid_document
-
-
-
-
-from .db_operations import cleanup_database, db_manager, DOCUMENTS_DIR
+from .db_operations import cleanup_database, get_db_manager, get_document_processor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
-#ogging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Suppress noisy loggers
@@ -38,40 +31,56 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 app = FastAPI()
 
 
-# At the top of your main.py, after imports
+# Global variables
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_DIR = os.path.join(BASE_DIR, "data", "db")
-DOCUMENTS_DIR = os.path.join(BASE_DIR, "data", "documents")
+DEFAULT_DB_DIR = os.path.join(BASE_DIR, "data", "db")
+DEFAULT_DOCUMENTS_DIR = os.path.join(BASE_DIR, "data", "documents")
 
-logger.debug(f"Base directory: {BASE_DIR}")
-logger.debug(f"Database directory: {DB_DIR}")
-logger.debug(f"Documents directory: {DOCUMENTS_DIR}")
+SELECTED_FOLDER = None
+DB_DIR = DEFAULT_DB_DIR
+DOCUMENTS_DIR = DEFAULT_DOCUMENTS_DIR
+db_manager = None
+document_processor = None
+file_watcher = None
+watcher_thread = None
 
-# Ensure these directories exist
-os.makedirs(DB_DIR, exist_ok=True)
-os.makedirs(DOCUMENTS_DIR, exist_ok=True)
+# Ensure default directories exist
+os.makedirs(DEFAULT_DB_DIR, exist_ok=True)
+os.makedirs(DEFAULT_DOCUMENTS_DIR, exist_ok=True)
 
-# Initialize components
-document_processor = DocumentProcessor()
-db_manager = DBManager(DB_DIR)
+document_processor = get_document_processor(DOCUMENTS_DIR)
+db_manager = get_db_manager(DB_DIR)
 
-
-# Initialize components
-file_watcher = FileWatcher(DOCUMENTS_DIR)
+# Initialize file watcher
+file_watcher = FileWatcher(DOCUMENTS_DIR, db_manager, document_processor)
 
 # Start file watcher in a separate thread
 watcher_thread = threading.Thread(target=file_watcher.run, daemon=True)
 watcher_thread.start()
 
-
 logger.info("File watcher thread started")
-db_manager = DBManager("./data/db")
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 def create_llm():
     global llm
     model_name = config.get("model", "mistral:latest")
     logger.info(f"Creating new LLM instance with model: {model_name}")
-    llm = Ollama(model=model_name)
+    try:
+        llm = Ollama(model=model_name)
+        logger.info(f"LLM instance created successfully with model: {model_name}")
+    except Exception as e:
+        logger.error(f"Error creating LLM instance: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error creating LLM instance: {str(e)}")
+
 
 # Create initial LLM instance
 create_llm()
@@ -87,6 +96,16 @@ class ConfigUpdate(BaseModel):
     template: str
     model: str
     k: int
+
+class FolderPath(BaseModel):
+    path: str
+
+def get_selected_folder():
+    if globals.SELECTED_FOLDER is None:
+        raise HTTPException(status_code=400, detail="Folder not selected")
+    return globals.SELECTED_FOLDER
+
+
 
 def cleanup_database():
     logger.info("Starting database cleanup")
@@ -191,87 +210,115 @@ async def query_stream(query: str, k: int, request: Request):
 
 @app.post("/query")
 async def query_documents(query_input: QueryInput, request: Request):
-    k = query_input.k if query_input.k != 5 else config.get("k", 5)
-    logger.info(f"Using k value: {k}")
-    return StreamingResponse(query_stream(query_input.text, k, request), media_type="application/json")
+    if not SELECTED_FOLDER:
+        raise HTTPException(status_code=400, detail="No folder selected. Please select a folder first.")
+    
+    global db_manager
+    try:
+        docs = db_manager.similarity_search(query_input.text, k=query_input.k)
+        return {"documents": docs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
 
-
+# Updated documents endpoint
 @app.get("/documents")
 async def list_documents():
+    if not SELECTED_FOLDER:
+        raise HTTPException(status_code=400, detail="No folder selected. Please select a folder first.")
+    
     try:
         documents = [f for f in os.listdir(DOCUMENTS_DIR) if os.path.isfile(os.path.join(DOCUMENTS_DIR, f)) and is_valid_document(f)]
         return {"documents": documents}
     except Exception as e:
-        logger.error(f"Error listing documents: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error listing documents: {str(e)}")
 
+# Updated refresh-documents endpoint
 @app.get("/refresh-documents")
 async def refresh_documents():
+    if not SELECTED_FOLDER:
+        raise HTTPException(status_code=400, detail="No folder selected. Please select a folder first.")
+    
     try:
-        cleanup_database()
+        cleanup_database(db_manager, document_processor, DOCUMENTS_DIR)
         return {"message": "Documents refreshed successfully"}
     except Exception as e:
-        logger.error(f"Error refreshing documents: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error refreshing documents: {str(e)}")
+
 
 @app.get("/config")
 async def get_config():
     return {
         "prompt_template": config.get_prompt_template(),
         "model": config.get("model", "mistral:latest"),
-        "k": config.get("k", 5)
+        "k": config.get("k", 5),
+        "folder_selected": SELECTED_FOLDER is not None,
+        "current_folder": SELECTED_FOLDER or "No folder selected"
     }
 
 @app.post("/config")
 async def update_config(config_update: ConfigUpdate):
-    try:
-        logger.info(f"Received config update: {config_update}")
-        config.set_prompt_template(config_update.template)
-        config.set("model", config_update.model)
-        config.set("k", config_update.k)
-        
-        # Recreate the LLM instance with the new model
-        create_llm()
-        
-        return {"message": "Config updated successfully"}
-    except ValidationError as e:
-        logger.error(f"Validation error: {str(e)}")
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error updating config: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+    config.set_prompt_template(config_update.template)
+    config.set("model", config_update.model)
+    config.set("k", config_update.k)
+    create_llm()  # Recreate the LLM instance with the new model
+    return {"message": "Config updated successfully"}
 
 @app.post("/config/reset")
 async def reset_config():
     config.reset_to_default()
+    create_llm()  # Recreate the LLM instance with the default model
     return {"message": "Config reset to default"}
+
 
 @app.post("/reset-and-rescan")
 async def reset_and_rescan():
+    if not SELECTED_FOLDER:
+        raise HTTPException(status_code=400, detail="No folder selected. Please select a folder first.")
+    
     try:
         db_manager.clear_database()
-        documents_dir = "./data/documents"
-        for filename in os.listdir(documents_dir):
+        for filename in os.listdir(DOCUMENTS_DIR):
             if filename.endswith(('.pdf', '.xml')):
-                file_path = os.path.join(documents_dir, filename)
-                logger.info(f"Processing file: {filename}")
-                chunks = document_processor.process_file(file_path)
+                file_path = os.path.join(DOCUMENTS_DIR, filename)
+                chunks = document_processor.process_file(filename)
                 db_manager.add_texts(chunks)
         return {"message": "Reset and rescan completed successfully"}
     except Exception as e:
-        logger.error(f"Error during reset and rescan: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error during reset and rescan: {str(e)}")
+
+@app.post("/set-folder")
+async def set_folder(folder: FolderPath):
+    print(f"Received request to set folder: {folder.path}")
+    global SELECTED_FOLDER, DB_DIR, DOCUMENTS_DIR, db_manager, document_processor, file_watcher, watcher_thread
+    SELECTED_FOLDER = folder.path
+    DB_DIR = os.path.join(SELECTED_FOLDER, '.raggy_db')
+    DOCUMENTS_DIR = os.path.join(SELECTED_FOLDER, 'documents')
+    
+    os.makedirs(DB_DIR, exist_ok=True)
+  
+    
+    db_manager = get_db_manager(DB_DIR)
+    document_processor = get_document_processor(DOCUMENTS_DIR)
+    
+    db_manager.clear_database()
+    
+    # Stop the existing file watcher
+    if file_watcher:
+        file_watcher.observer.stop()
+        watcher_thread.join()
+    
+    # Create a new file watcher for the new directory
+    file_watcher = FileWatcher(DOCUMENTS_DIR, db_manager, document_processor)
+    watcher_thread = threading.Thread(target=file_watcher.run, daemon=True)
+    watcher_thread.start()
+    
+    return {"message": f"Folder set to {SELECTED_FOLDER}"}
     
 async def periodic_refresh():
     while True:
         await asyncio.sleep(60)  # Refresh every 60 seconds
         logger.info("Performing periodic database refresh")
         cleanup_database()
-
-@app.on_event("startup")
-async def startup_event():
-    cleanup_database()
-    #asyncio.create_task(periodic_refresh())
 
 
 def get_installed_ollama_models():
@@ -302,15 +349,25 @@ def get_installed_ollama_models():
 async def list_models():
     try:
         models = get_installed_ollama_models()
-        logger.info(f"Returning models: {models}")
         return {"models": models}
     except Exception as e:
         logger.error(f"Error listing models: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error listing models: {str(e)}")
+    
+
+
 
 @app.get("/")
 async def root():
     return {"message": "Local RAG App Backend is running"}
+
+
+@app.on_event("startup")
+async def startup_event():
+    cleanup_database()
+    #asyncio.create_task(periodic_refresh())
+
+
 
 if __name__ == "__main__":
     import uvicorn

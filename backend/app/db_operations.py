@@ -1,22 +1,24 @@
-# backend/app/db_operations.py
+# File: backend/app/db_operations.py
 
 import os
 import logging
-from .document_processor import DocumentProcessor
-from .db_manager import DBManager
 from .utils import is_valid_document
 
 logger = logging.getLogger(__name__)
 
-document_processor = DocumentProcessor()
-db_manager = DBManager("./data/db")
-DOCUMENTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "documents")
+def get_document_processor(documents_dir):
+    from .document_processor import DocumentProcessor
+    return DocumentProcessor(documents_dir)
 
-def cleanup_database():
+def get_db_manager(db_dir):
+    from .db_manager import DBManager
+    return DBManager(db_dir)
+
+def cleanup_database(db_manager, document_processor, documents_dir):
     logger.info("Starting database cleanup")
     try:
-        current_files = set(f for f in os.listdir(DOCUMENTS_DIR) 
-                            if os.path.isfile(os.path.join(DOCUMENTS_DIR, f)) and is_valid_document(f))
+        current_files = set(f for f in os.listdir(documents_dir) 
+                            if os.path.isfile(os.path.join(documents_dir, f)) and is_valid_document(f))
         db_documents = db_manager.get_all_sources()
         
         logger.debug(f"Current files in documents directory: {current_files}")
@@ -30,8 +32,8 @@ def cleanup_database():
             # Add all current documents to the new database
             for file in current_files:
                 logger.info(f"Adding document to database: {file}")
-                file_path = os.path.join(DOCUMENTS_DIR, file)
-                chunks = document_processor.process_file(file_path)
+                file_path = os.path.join(documents_dir, file)
+                chunks = document_processor.process_file(file)
                 metadata = [{"source": file} for _ in chunks]
                 db_manager.add_texts(chunks, metadata)
         

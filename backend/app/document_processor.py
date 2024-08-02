@@ -4,11 +4,14 @@ import xml.etree.ElementTree as ET
 from typing import List, Dict, Tuple
 
 class DocumentProcessor:
-    def __init__(self, chunk_size=1000, chunk_overlap=200):
+    def __init__(self, documents_dir, chunk_size=1000, chunk_overlap=200):
+        self.documents_dir = documents_dir
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
 
-    def process_file(self, file_path):
+    
+    def process_file(self, file_name):
+        file_path = os.path.join(self.documents_dir, file_name)
         """Process a file based on its extension."""
         _, ext = os.path.splitext(file_path)
         if ext.lower() == '.pdf':

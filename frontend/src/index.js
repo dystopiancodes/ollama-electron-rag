@@ -1,9 +1,12 @@
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const axios = require("axios");
+
+let mainWindow;
 
 function createWindow() {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 800,
     height: 600,
     webPreferences: {
@@ -15,12 +18,12 @@ function createWindow() {
     },
   });
 
-  win.loadFile(path.join(__dirname, "index.html"));
+  mainWindow.loadFile(path.join(__dirname, "index.html"));
 
   // Open DevTools for debugging
-  //win.webContents.openDevTools();
+  mainWindow.webContents.openDevTools();
 
-  win.webContents.on("did-finish-load", () => {
+  mainWindow.webContents.on("did-finish-load", () => {
     console.log("Window loaded");
   });
 }
@@ -71,6 +74,42 @@ app.whenReady().then(() => {
     } else {
       console.error("Main: File not found");
       return { success: false, message: "File not found" };
+    }
+  });
+
+  ipcMain.handle("select-folder", async () => {
+    try {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ["openDirectory"],
+      });
+
+      if (!result.canceled && result.filePaths.length > 0) {
+        const folderPath = result.filePaths[0];
+        try {
+          const response = await axios.post(
+            "http://localhost:8000/set-folder",
+            {
+              path: folderPath,
+            }
+          );
+          console.log("Backend response:", response.data);
+          return folderPath;
+        } catch (error) {
+          console.error("Error setting folder on backend:", error);
+          if (error.response) {
+            console.error("Backend error response:", error.response.data);
+          } else if (error.request) {
+            console.error("No response received from backend");
+          } else {
+            console.error("Error setting up the request:", error.message);
+          }
+          throw new Error(`Failed to set folder on backend: ${error.message}`);
+        }
+      }
+      return null;
+    } catch (error) {
+      console.error("Error in select-folder:", error);
+      throw error;
     }
   });
 });

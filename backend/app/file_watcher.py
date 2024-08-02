@@ -1,19 +1,20 @@
-# backend/app/file_watcher.py
+# File: backend/app/file_watcher.py
 
 import time
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import os
 import logging
-from .db_operations import cleanup_database, db_manager, document_processor
+from .db_operations import cleanup_database
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 class DocumentHandler(FileSystemEventHandler):
-    def __init__(self, document_processor, db_manager):
-        self.document_processor = document_processor
+    def __init__(self, db_manager, document_processor, documents_dir):
         self.db_manager = db_manager
+        self.document_processor = document_processor
+        self.documents_dir = documents_dir
 
     def on_created(self, event):
         if not event.is_directory:
@@ -48,14 +49,14 @@ class DocumentHandler(FileSystemEventHandler):
             self.db_manager.remove_documents({"source": filename})
             logger.info(f"Removed from database: {filename}")
             # Trigger a full database cleanup
-            cleanup_database()
+            cleanup_database(self.db_manager, self.document_processor, self.documents_dir)
         except Exception as e:
             logger.error(f"Error removing file {file_path} from database: {str(e)}")
 
 class FileWatcher:
-    def __init__(self, path_to_watch):
+    def __init__(self, path_to_watch, db_manager, document_processor):
         self.path_to_watch = path_to_watch
-        self.handler = DocumentHandler(document_processor, db_manager)
+        self.handler = DocumentHandler(db_manager, document_processor, path_to_watch)
         self.observer = Observer()
 
     def run(self):

@@ -66,6 +66,7 @@ function App() {
   const [kValue, setKValue] = useState(5); // Add this line
   const [currentKValue, setCurrentKValue] = useState(5);
   const [currentModel, setCurrentModel] = useState(""); // Add this line
+  const [selectedFolder, setSelectedFolder] = useState("");
 
   useEffect(() => {
     fetchConfig();
@@ -81,6 +82,7 @@ function App() {
       setCurrentModel(data.model);
       setKValue(data.k);
       setCurrentKValue(data.k);
+      setSelectedFolder(data.current_folder);
     } catch (error) {
       console.error("Error fetching config:", error);
       setSnackbar({
@@ -97,15 +99,6 @@ function App() {
       const data = await response.json();
       console.log("Fetched models:", data.models);
       setModels(data.models);
-
-      // Now that we have the models, we can set the selectedModel
-      const configResponse = await fetch("http://localhost:8000/config");
-      const configData = await configResponse.json();
-      if (data.models.includes(configData.model)) {
-        setSelectedModel(configData.model);
-      } else if (data.models.length > 0) {
-        setSelectedModel(data.models[0]); // Set to the first available model if the current one is not in the list
-      }
     } catch (error) {
       console.error("Error fetching models:", error);
       setSnackbar({
@@ -118,6 +111,14 @@ function App() {
 
   const handleQuery = async (e) => {
     e.preventDefault();
+    if (!selectedFolder) {
+      setSnackbar({
+        open: true,
+        message: "Please select a folder first",
+        severity: "warning",
+      });
+      return;
+    }
     setIsLoading(true);
     setIsGenerating(true);
     setAnswer("");
@@ -182,6 +183,42 @@ function App() {
       setIsLoading(false);
       setIsGenerating(false);
       abortControllerRef.current = null;
+    }
+  };
+
+  const handleFolderSelection = async () => {
+    try {
+      const folder = await window.electron.selectFolder();
+      if (folder) {
+        setSelectedFolder(folder);
+        // Optionally, trigger a refresh or update of the app state
+        await fetchDocuments();
+      }
+    } catch (error) {
+      console.error("Error selecting folder:", error);
+      setSnackbar({
+        open: true,
+        message: "Error selecting folder",
+        severity: "error",
+      });
+    }
+  };
+
+  const fetchDocuments = async () => {
+    if (selectedFolder) {
+      try {
+        const response = await fetch("http://localhost:8000/documents");
+        const data = await response.json();
+        // Update your state with the new document list
+        // ...
+      } catch (error) {
+        console.error("Error fetching documents:", error);
+        setSnackbar({
+          open: true,
+          message: "Error fetching documents",
+          severity: "error",
+        });
+      }
     }
   };
 
@@ -359,9 +396,19 @@ function App() {
       <CssBaseline />
       <Container maxWidth="md">
         <Box sx={{ my: 4, position: "relative", minHeight: "100vh", pb: 10 }}>
-          <Typography variant="h4" component="h1" gutterBottom>
-            Raggy
-          </Typography>
+          <Button
+            onClick={handleFolderSelection}
+            variant="contained"
+            sx={{ mb: 2 }}
+          >
+            Select Folder
+          </Button>
+
+          {selectedFolder && (
+            <Typography variant="body1" sx={{ mb: 2 }}>
+              Current folder: {selectedFolder}
+            </Typography>
+          )}
 
           <IconButton
             sx={{ position: "absolute", top: 0, right: 40 }}
