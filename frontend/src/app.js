@@ -14,6 +14,7 @@ import Alert from "@mui/material/Alert";
 import IconButton from "@mui/material/IconButton";
 import SettingsIcon from "@mui/icons-material/Settings";
 import CodeIcon from "@mui/icons-material/Code";
+import StopIcon from "@mui/icons-material/Stop";
 
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
@@ -21,6 +22,11 @@ import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
 import LinearProgress from "@mui/material/LinearProgress";
 import Drawer from "@mui/material/Drawer";
+import Select from "@mui/material/Select";
+import MenuItem from "@mui/material/MenuItem";
+import FormControl from "@mui/material/FormControl";
+import InputLabel from "@mui/material/InputLabel";
+import Paper from "@mui/material/Paper";
 
 const theme = createTheme({
   palette: {
@@ -32,6 +38,8 @@ const theme = createTheme({
 });
 
 function App() {
+  const [isGenerating, setIsGenerating] = useState(false);
+  const abortControllerRef = useRef(null);
   const [query, setQuery] = useState("");
   const [answer, setAnswer] = useState("");
   const [sources, setSources] = useState([]);
@@ -53,8 +61,15 @@ function App() {
   const [debugOpen, setDebugOpen] = useState(false);
   const [debugInfo, setDebugInfo] = useState("");
 
+  const [models, setModels] = useState([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [kValue, setKValue] = useState(5); // Add this line
+  const [currentKValue, setCurrentKValue] = useState(5);
+  const [currentModel, setCurrentModel] = useState(""); // Add this line
+
   useEffect(() => {
     fetchConfig();
+    fetchModels();
   }, []);
 
   const fetchConfig = async () => {
@@ -62,6 +77,10 @@ function App() {
       const response = await fetch("http://localhost:8000/config");
       const data = await response.json();
       setPromptTemplate(data.prompt_template);
+      setSelectedModel(data.model);
+      setCurrentModel(data.model);
+      setKValue(data.k);
+      setCurrentKValue(data.k);
     } catch (error) {
       console.error("Error fetching config:", error);
       setSnackbar({
@@ -72,20 +91,48 @@ function App() {
     }
   };
 
+  const fetchModels = async () => {
+    try {
+      const response = await fetch("http://localhost:8000/models");
+      const data = await response.json();
+      console.log("Fetched models:", data.models);
+      setModels(data.models);
+
+      // Now that we have the models, we can set the selectedModel
+      const configResponse = await fetch("http://localhost:8000/config");
+      const configData = await configResponse.json();
+      if (data.models.includes(configData.model)) {
+        setSelectedModel(configData.model);
+      } else if (data.models.length > 0) {
+        setSelectedModel(data.models[0]); // Set to the first available model if the current one is not in the list
+      }
+    } catch (error) {
+      console.error("Error fetching models:", error);
+      setSnackbar({
+        open: true,
+        message: "Error fetching models",
+        severity: "error",
+      });
+    }
+  };
+
   const handleQuery = async (e) => {
     e.preventDefault();
     setIsLoading(true);
+    setIsGenerating(true);
     setAnswer("");
     setSources([]);
     setDebugInfo("");
 
     try {
+      abortControllerRef.current = new AbortController();
       const response = await fetch("http://localhost:8000/query", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ text: query }),
+        body: JSON.stringify({ text: query, k: currentKValue }),
+        signal: abortControllerRef.current.signal,
       });
 
       const reader = response.body.getReader();
@@ -116,14 +163,31 @@ function App() {
         });
       }
     } catch (error) {
-      console.error("Error querying documents:", error);
-      setSnackbar({
-        open: true,
-        message: "Error querying documents",
-        severity: "error",
-      });
+      if (error.name === "AbortError") {
+        console.log("Fetch aborted");
+        setSnackbar({
+          open: true,
+          message: "Generation stopped",
+          severity: "info",
+        });
+      } else {
+        console.error("Error querying documents:", error);
+        setSnackbar({
+          open: true,
+          message: "Error querying documents",
+          severity: "error",
+        });
+      }
     } finally {
       setIsLoading(false);
+      setIsGenerating(false);
+      abortControllerRef.current = null;
+    }
+  };
+
+  const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
     }
   };
 
@@ -175,31 +239,43 @@ function App() {
 
   const handleConfigSave = async () => {
     try {
+      console.log("Sending config:", {
+        template: promptTemplate,
+        model: selectedModel,
+        k: kValue,
+      });
       const response = await fetch("http://localhost:8000/config", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ template: promptTemplate }),
+        body: JSON.stringify({
+          template: promptTemplate,
+          model: selectedModel,
+          k: parseInt(kValue, 10),
+        }),
       });
       if (response.ok) {
+        setCurrentModel(selectedModel);
+        setCurrentKValue(parseInt(kValue, 10));
         setSnackbar({
           open: true,
-          message: "Configuration saved successfully",
+          message: "Configuration saved successfully. LLM and k value updated.",
           severity: "success",
         });
+        handleConfigClose();
       } else {
-        throw new Error("Failed to save configuration");
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Failed to save configuration");
       }
     } catch (error) {
       console.error("Error saving config:", error);
       setSnackbar({
         open: true,
-        message: "Error saving configuration",
+        message: `Error saving configuration: ${error.message}`,
         severity: "error",
       });
     }
-    handleConfigClose();
   };
 
   const handleConfigReset = async () => {
@@ -282,10 +358,11 @@ function App() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Container maxWidth="md">
-        <Box sx={{ my: 4, position: "relative" }}>
+        <Box sx={{ my: 4, position: "relative", minHeight: "100vh", pb: 10 }}>
           <Typography variant="h4" component="h1" gutterBottom>
-            Local RAG App
+            Raggy
           </Typography>
+
           <IconButton
             sx={{ position: "absolute", top: 0, right: 40 }}
             onClick={handleConfigOpen}
@@ -300,6 +377,7 @@ function App() {
           >
             <CodeIcon />
           </IconButton>
+
           <form onSubmit={handleQuery}>
             <TextField
               fullWidth
@@ -310,14 +388,26 @@ function App() {
               disabled={isLoading}
               sx={{ mb: 2 }}
             />
-            <Button
-              type="submit"
-              variant="contained"
-              disabled={isLoading}
-              startIcon={isLoading ? <CircularProgress size={20} /> : null}
-            >
-              {isLoading ? "Loading..." : "Submit"}
-            </Button>
+            <Box sx={{ display: "flex", gap: 2 }}>
+              <Button
+                type="submit"
+                variant="contained"
+                disabled={isLoading}
+                startIcon={isLoading ? <CircularProgress size={20} /> : null}
+              >
+                {isLoading ? "Loading..." : "Submit"}
+              </Button>
+              {isGenerating && (
+                <Button
+                  variant="outlined"
+                  color="secondary"
+                  onClick={handleStopGeneration}
+                  startIcon={<StopIcon />}
+                >
+                  Stop
+                </Button>
+              )}
+            </Box>
           </form>
           {answer && (
             <Box sx={{ mt: 4 }} ref={answerRef}>
@@ -348,8 +438,7 @@ function App() {
           <DialogTitle>Configuration</DialogTitle>
           <DialogContent>
             <Typography variant="body2" gutterBottom>
-              Customize the prompt template. Use {"{context}"} for the retrieved
-              document content and {"{question}"} for the user's question.
+              Customize the prompt template and select the model.
             </Typography>
             <TextField
               autoFocus
@@ -363,6 +452,31 @@ function App() {
               value={promptTemplate}
               onChange={(e) => setPromptTemplate(e.target.value)}
             />
+            <FormControl fullWidth margin="normal">
+              <InputLabel id="model-select-label">Model</InputLabel>
+              <Select
+                labelId="model-select-label"
+                value={selectedModel}
+                label="Model"
+                onChange={(e) => setSelectedModel(e.target.value)}
+              >
+                {models.map((model) => (
+                  <MenuItem key={model} value={model}>
+                    {model}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <TextField
+              margin="normal"
+              label="K Value"
+              type="number"
+              fullWidth
+              variant="outlined"
+              value={kValue}
+              onChange={(e) => setKValue(parseInt(e.target.value, 10))}
+            />
+
             <Box mt={2}>
               <Button
                 onClick={handleResetAndRescan}
@@ -430,6 +544,25 @@ function App() {
             />
           </Box>
         </Drawer>
+        <Paper
+          elevation={3}
+          sx={{
+            position: "fixed",
+            bottom: 16,
+            right: 16,
+            padding: 1,
+            borderRadius: 1,
+            backgroundColor: "rgba(255, 255, 255, 0.8)",
+            zIndex: 1000,
+          }}
+        >
+          <Typography variant="caption" display="block">
+            Model: {currentModel}
+          </Typography>
+          <Typography variant="caption" display="block">
+            k: {currentKValue}
+          </Typography>
+        </Paper>
       </Container>
     </ThemeProvider>
   );

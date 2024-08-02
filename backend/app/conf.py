@@ -19,10 +19,11 @@ Domanda: {question}
 Basandoti sul contesto fornito, rispondi alla domanda in modo conciso ma informativo. Se non trovi una risposta adeguata nel contesto, dillo esplicitamente.
 <|eot_id|>
 <|start_header_id|>assistant<|end_header_id|>
-"""
+""",
+            "model": "mistral:latest",
+            "k": 5
         }
         self.config = self.load_config()
-
 
     def load_config(self):
         if os.path.exists(self.config_file):
@@ -39,6 +40,13 @@ Basandoti sul contesto fornito, rispondi alla domanda in modo conciso ma informa
 
     def set_prompt_template(self, new_template):
         self.config['prompt_template'] = new_template
+        self.save_config()
+
+    def get(self, key, default=None):
+        return self.config.get(key, default)
+
+    def set(self, key, value):
+        self.config[key] = value
         self.save_config()
 
     def reset_to_default(self):

@@ -191,6 +191,64 @@ class DBManager:
         except Exception as e:
             logger.error(f"Error removing documents: {str(e)}")
             raise
+
+    def recreate_database(self):
+        logger.info("Recreating database...")
+        try:
+            # Clear existing database
+            self.clear_database()
+            # Create a new database instance
+            self.db = self._load_or_create_db()
+            logger.info("Database recreated successfully")
+        except Exception as e:
+            logger.error(f"Error recreating database: {str(e)}")
+            raise
+# File: db_operations.py
+
+# backend/app/db_operations.py
+
+import os
+import logging
+from .document_processor import DocumentProcessor
+from .db_manager import DBManager
+from .utils import is_valid_document
+
+logger = logging.getLogger(__name__)
+
+document_processor = DocumentProcessor()
+db_manager = DBManager("./data/db")
+DOCUMENTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "documents")
+
+def cleanup_database():
+    logger.info("Starting database cleanup")
+    try:
+        current_files = set(f for f in os.listdir(DOCUMENTS_DIR) 
+                            if os.path.isfile(os.path.join(DOCUMENTS_DIR, f)) and is_valid_document(f))
+        db_documents = db_manager.get_all_sources()
+        
+        logger.debug(f"Current files in documents directory: {current_files}")
+        logger.debug(f"Documents in database before cleanup: {db_documents}")
+
+        # If there's any mismatch between files and database, recreate the database
+        if current_files != db_documents:
+            logger.info("Mismatch detected. Recreating database...")
+            db_manager.recreate_database()
+            
+            # Add all current documents to the new database
+            for file in current_files:
+                logger.info(f"Adding document to database: {file}")
+                file_path = os.path.join(DOCUMENTS_DIR, file)
+                chunks = document_processor.process_file(file_path)
+                metadata = [{"source": file} for _ in chunks]
+                db_manager.add_texts(chunks, metadata)
+        
+        # Verify the database state after cleanup
+        final_db_documents = db_manager.get_all_sources()
+        logger.debug(f"Documents in database after cleanup: {final_db_documents}")
+        
+        logger.info("Database cleanup completed.")
+    except Exception as e:
+        logger.error(f"Error during database cleanup: {str(e)}", exc_info=True)
 # File: document_processor.py
 
 import os
@@ -315,6 +373,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import os
 import logging
+from .db_operations import cleanup_database, db_manager, document_processor
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -356,13 +415,13 @@ class DocumentHandler(FileSystemEventHandler):
             logger.debug(f"Removing file from database: {filename}")
             self.db_manager.remove_documents({"source": filename})
             logger.info(f"Removed from database: {filename}")
-            # Force a refresh of the database
-            self.db_manager._load_or_create_db()
+            # Trigger a full database cleanup
+            cleanup_database()
         except Exception as e:
             logger.error(f"Error removing file {file_path} from database: {str(e)}")
 
 class FileWatcher:
-    def __init__(self, path_to_watch, document_processor, db_manager):
+    def __init__(self, path_to_watch):
         self.path_to_watch = path_to_watch
         self.handler = DocumentHandler(document_processor, db_manager)
         self.observer = Observer()
@@ -400,6 +459,10 @@ from .file_watcher import FileWatcher
 from .conf import config
 from .utils import is_valid_document
 
+
+
+from .db_operations import cleanup_database, db_manager, DOCUMENTS_DIR
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 #ogging.basicConfig(level=logging.DEBUG)
@@ -430,13 +493,14 @@ document_processor = DocumentProcessor()
 db_manager = DBManager(DB_DIR)
 
 
-file_watcher = FileWatcher(DOCUMENTS_DIR, document_processor, db_manager)
-
+# Initialize components
+file_watcher = FileWatcher(DOCUMENTS_DIR)
 
 # Start file watcher in a separate thread
-
 watcher_thread = threading.Thread(target=file_watcher.run, daemon=True)
 watcher_thread.start()
+
+
 logger.info("File watcher thread started")
 db_manager = DBManager("./data/db")
 # Initialize Ollama LLM
@@ -444,7 +508,7 @@ llm = Ollama(model="mistral:latest")
 
 class QueryInput(BaseModel):
     text: str
-    k: int = 3  # Default value is 3
+    k: int = 5  # Default value is 3
 
 class PromptTemplateUpdate(BaseModel):
     template: str
@@ -459,36 +523,29 @@ def cleanup_database():
         logger.debug(f"Current files in documents directory: {current_files}")
         logger.debug(f"Documents in database before cleanup: {db_documents}")
 
-        # Remove documents from the database that no longer exist in the directory
-        for doc in db_documents - current_files:
-            logger.info(f"Removing document from database: {doc}")
-            db_manager.remove_documents({"source": doc})
-        
-        # Add only new documents to the database
-        new_files = current_files - db_documents
-        for file in new_files:
-            logger.info(f"Adding new document to database: {file}")
-            file_path = os.path.join(DOCUMENTS_DIR, file)
-            chunks = document_processor.process_file(file_path)
-            metadata = [{"source": file} for _ in chunks]
-            db_manager.add_texts(chunks, metadata)
+        # If there's any mismatch between files and database, recreate the database
+        if current_files != db_documents:
+            logger.info("Mismatch detected. Recreating database...")
+            db_manager.recreate_database()
+            
+            # Add all current documents to the new database
+            for file in current_files:
+                logger.info(f"Adding document to database: {file}")
+                file_path = os.path.join(DOCUMENTS_DIR, file)
+                chunks = document_processor.process_file(file_path)
+                metadata = [{"source": file} for _ in chunks]
+                db_manager.add_texts(chunks, metadata)
         
         # Verify the database state after cleanup
         final_db_documents = db_manager.get_all_sources()
         logger.debug(f"Documents in database after cleanup: {final_db_documents}")
         
-        # Check if the database directory is empty
-        db_files = os.listdir(DB_DIR)
-        logger.debug(f"Files in database directory after cleanup: {db_files}")
-        
-        logger.info(f"Database cleanup completed. Added {len(new_files)} new documents.")
+        logger.info("Database cleanup completed.")
     except Exception as e:
         logger.error(f"Error during database cleanup: {str(e)}", exc_info=True)
 
 
-@app.on_event("startup")
-async def startup_event():
-    cleanup_database()
+
 
 @app.get("/db-state")
 async def get_db_state():
@@ -606,7 +663,17 @@ async def reset_and_rescan():
     except Exception as e:
         logger.error(f"Error during reset and rescan: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+async def periodic_refresh():
+    while True:
+        await asyncio.sleep(60)  # Refresh every 60 seconds
+        logger.info("Performing periodic database refresh")
+        cleanup_database()
 
+@app.on_event("startup")
+async def startup_event():
+    cleanup_database()
+    #asyncio.create_task(periodic_refresh())
 
 @app.get("/")
 async def root():

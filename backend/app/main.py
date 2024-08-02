@@ -6,11 +6,13 @@ import threading
 import json
 import asyncio
 import logging
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from langchain.prompts import PromptTemplate
 from langchain_community.llms import Ollama
+import subprocess
 
 # Import custom modules
 from .document_processor import DocumentProcessor
@@ -18,6 +20,7 @@ from .db_manager import DBManager
 from .file_watcher import FileWatcher
 from .conf import config
 from .utils import is_valid_document
+
 
 
 
@@ -63,8 +66,15 @@ watcher_thread.start()
 
 logger.info("File watcher thread started")
 db_manager = DBManager("./data/db")
-# Initialize Ollama LLM
-llm = Ollama(model="mistral:latest")
+
+def create_llm():
+    global llm
+    model_name = config.get("model", "mistral:latest")
+    logger.info(f"Creating new LLM instance with model: {model_name}")
+    llm = Ollama(model=model_name)
+
+# Create initial LLM instance
+create_llm()
 
 class QueryInput(BaseModel):
     text: str
@@ -72,6 +82,11 @@ class QueryInput(BaseModel):
 
 class PromptTemplateUpdate(BaseModel):
     template: str
+
+class ConfigUpdate(BaseModel):
+    template: str
+    model: str
+    k: int
 
 def cleanup_database():
     logger.info("Starting database cleanup")
@@ -120,11 +135,12 @@ async def get_db_state():
         logger.error(f"Error getting database state: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))    
 
-async def query_stream(query: str, k: int):
+async def query_stream(query: str, k: int, request: Request):
     try:
         logger.info(f"Received query: {query}, k={k}")
         yield json.dumps({"debug": f"Received query: {query}, k={k}"}) + "\n"
 
+        logger.info(f"Performing similarity search with k={k}")
         docs = db_manager.similarity_search(query, k=k)
         logger.info(f"Similarity search returned {len(docs)} documents")
         yield json.dumps({"debug": f"Similarity search returned {len(docs)} documents"}) + "\n"
@@ -136,8 +152,6 @@ async def query_stream(query: str, k: int):
             return
 
         context = "\n".join([doc.page_content for doc in docs])
-        #logger.debug(f"Full Context: {context}")
-        #yield json.dumps({"debug": f"Full Context: {context}"}) + "\n"
 
         sources = [doc.metadata.get("source", "Unknown") for doc in docs]
         unique_sources = list(set(sources))
@@ -151,9 +165,14 @@ async def query_stream(query: str, k: int):
         logger.debug(f"Full Generated prompt: {prompt}")
         yield json.dumps({"debug": f"Full Generated prompt: {prompt}"}) + "\n"
 
+        logger.info(f"Using LLM with model: {llm.model}")
+        yield json.dumps({"debug": f"Using LLM with model: {llm.model}"}) + "\n"
 
         response = ""
         for chunk in llm.stream(prompt):
+            if await request.is_disconnected():
+                logger.info("Client disconnected, stopping generation")
+                break
             response += chunk
             yield json.dumps({"answer": chunk}) + "\n"
             await asyncio.sleep(0.1)
@@ -171,9 +190,10 @@ async def query_stream(query: str, k: int):
         yield json.dumps({"error": f"Si è verificato un errore durante l'elaborazione della query: {str(e)}"}) + "\n"
 
 @app.post("/query")
-async def query_documents(query_input: QueryInput):
-    return StreamingResponse(query_stream(query_input.text, query_input.k), media_type="application/json")
-
+async def query_documents(query_input: QueryInput, request: Request):
+    k = query_input.k if query_input.k != 5 else config.get("k", 5)
+    logger.info(f"Using k value: {k}")
+    return StreamingResponse(query_stream(query_input.text, k, request), media_type="application/json")
 
 
 @app.get("/documents")
@@ -196,12 +216,30 @@ async def refresh_documents():
 
 @app.get("/config")
 async def get_config():
-    return {"prompt_template": config.get_prompt_template()}
+    return {
+        "prompt_template": config.get_prompt_template(),
+        "model": config.get("model", "mistral:latest"),
+        "k": config.get("k", 5)
+    }
 
 @app.post("/config")
-async def update_config(prompt_template: PromptTemplateUpdate):
-    config.set_prompt_template(prompt_template.template)
-    return {"message": "Config updated successfully"}
+async def update_config(config_update: ConfigUpdate):
+    try:
+        logger.info(f"Received config update: {config_update}")
+        config.set_prompt_template(config_update.template)
+        config.set("model", config_update.model)
+        config.set("k", config_update.k)
+        
+        # Recreate the LLM instance with the new model
+        create_llm()
+        
+        return {"message": "Config updated successfully"}
+    except ValidationError as e:
+        logger.error(f"Validation error: {str(e)}")
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating config: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 @app.post("/config/reset")
 async def reset_config():
@@ -234,6 +272,41 @@ async def periodic_refresh():
 async def startup_event():
     cleanup_database()
     #asyncio.create_task(periodic_refresh())
+
+
+def get_installed_ollama_models():
+    try:
+        logger.info("Attempting to run 'ollama list'")
+        result = subprocess.run(["ollama", "list"], capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            logger.error(f"Error running 'ollama list': {result.stderr}")
+            return []
+        
+        logger.info(f"Raw output from 'ollama list': {result.stdout}")
+        
+        # Parse the output to extract model names
+        models = []
+        for line in result.stdout.split('\n')[1:]:  # Skip the header line
+            if line.strip():
+                model_name = line.split()[0]  # The model name is the first column
+                models.append(model_name)
+        
+        logger.info(f"Parsed models: {models}")
+        return models
+    except Exception as e:
+        logger.error(f"Exception in get_installed_ollama_models: {str(e)}", exc_info=True)
+        return []
+
+@app.get("/models")
+async def list_models():
+    try:
+        models = get_installed_ollama_models()
+        logger.info(f"Returning models: {models}")
+        return {"models": models}
+    except Exception as e:
+        logger.error(f"Error listing models: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
 async def root():
