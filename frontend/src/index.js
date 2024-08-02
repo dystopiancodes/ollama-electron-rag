@@ -34,7 +34,7 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, "index.html"));
-  //mainWindow.webContents.openDevTools();
+  mainWindow.webContents.openDevTools();
 }
 
 function findVenvPython(backendPath) {
@@ -115,12 +115,13 @@ function checkBackendHealth(retries = 0, maxRetries = 30) {
     .get("http://127.0.0.1:8000/health", {
       timeout: 1000,
       headers: { Host: "localhost" },
-      proxy: false, // Disable any proxy settings
-      family: 4, // Force IPv4
+      proxy: false,
+      family: 4,
     })
     .then((response) => {
       console.log("Backend is ready, creating window");
       console.log("Response data:", response.data);
+      mainWindow.webContents.send("backendReady"); // Notify the renderer process
       createWindow();
     })
     .catch((error) => {

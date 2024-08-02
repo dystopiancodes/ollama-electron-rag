@@ -108,6 +108,7 @@ class QueryInput(BaseModel):
 
 class ConfigUpdate(BaseModel):
     template: str
+    folder: str
     model: str
     k: int
 
@@ -292,6 +293,8 @@ async def update_config(config_update: ConfigUpdate):
     config.set_prompt_template(config_update.template)
     config.set("model", config_update.model)
     config.set("k", config_update.k)
+    config.set("folder_selected", config_update.folder)
+    config.set("current_folder", config_update.folder)
     create_llm()  # Recreate the LLM instance with the new model
     return {"message": "Config updated successfully"}
 
