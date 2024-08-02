@@ -1,5 +1,5 @@
 # File: backend/app/file_watcher.py
-
+import threading
 import time
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -18,54 +18,58 @@ class DocumentHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         if not event.is_directory:
-            logger.debug(f"New file detected: {event.src_path}")
+            logger.info(f"New file detected: {event.src_path}")
             self._process_file(event.src_path)
 
     def on_modified(self, event):
         if not event.is_directory:
-            logger.debug(f"File modified: {event.src_path}")
+            logger.info(f"File modified: {event.src_path}")
             self._process_file(event.src_path)
-
-    def on_deleted(self, event):
-        if not event.is_directory:
-            logger.debug(f"File deleted: {event.src_path}")
-            self._remove_file_from_db(event.src_path)
 
     def _process_file(self, file_path):
         try:
-            logger.debug(f"Starting to process file: {file_path}")
+            logger.info(f"Starting to process file: {file_path}")
             chunks = self.document_processor.process_file(file_path)
-            logger.debug(f"File processed, got {len(chunks)} chunks")
+            logger.info(f"File processed, got {len(chunks)} chunks")
             metadata = {"source": os.path.basename(file_path)}
             self.db_manager.add_texts(chunks, [metadata] * len(chunks))
-            logger.debug(f"Processed and added to database: {file_path}")
+            logger.info(f"Processed and added to database: {file_path}")
         except Exception as e:
-            logger.error(f"Error processing file {file_path}: {str(e)}")
+            logger.error(f"Error processing file {file_path}: {str(e)}", exc_info=True)
+
+    def on_deleted(self, event):
+        if not event.is_directory:
+            logger.info(f"File deleted: {event.src_path}")
+            self._remove_file_from_db(event.src_path)
 
     def _remove_file_from_db(self, file_path):
         try:
             filename = os.path.basename(file_path)
-            logger.debug(f"Removing file from database: {filename}")
+            logger.info(f"Removing file from database: {filename}")
             self.db_manager.remove_documents({"source": filename})
             logger.info(f"Removed from database: {filename}")
-            # Trigger a full database cleanup
-            cleanup_database(self.db_manager, self.document_processor, self.documents_dir)
         except Exception as e:
-            logger.error(f"Error removing file {file_path} from database: {str(e)}")
+            logger.error(f"Error removing file {file_path} from database: {str(e)}", exc_info=True)
 
 class FileWatcher:
     def __init__(self, path_to_watch, db_manager, document_processor):
         self.path_to_watch = path_to_watch
         self.handler = DocumentHandler(db_manager, document_processor, path_to_watch)
         self.observer = Observer()
+        self.stop_event = threading.Event()
 
     def run(self):
-        logger.debug(f"Starting file watcher on path: {self.path_to_watch}")
         self.observer.schedule(self.handler, self.path_to_watch, recursive=False)
         self.observer.start()
         try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
+            while not self.stop_event.is_set():
+                self.stop_event.wait(1)
+        finally:
             self.observer.stop()
-        self.observer.join()
+            self.observer.join()
+
+    def stop(self):
+        self.stop_event.set()
+        if self.observer.is_alive():
+            self.observer.stop()
+            self.observer.join()

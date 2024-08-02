@@ -4,15 +4,14 @@ import json
 import asyncio
 import logging
 from fastapi import FastAPI, HTTPException, Request, Depends
-
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ValidationError
-from langchain.prompts import PromptTemplate
+from pydantic import BaseModel
 from langchain_community.llms import Ollama
 import subprocess
+import time
 
 # Import custom modules
-from . import globals
 from .document_processor import DocumentProcessor
 from .db_manager import DBManager
 from .file_watcher import FileWatcher
@@ -24,11 +23,20 @@ from .db_operations import cleanup_database, get_db_manager, get_document_proces
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Suppress noisy loggers
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
 
 
 # Global variables
@@ -48,27 +56,37 @@ watcher_thread = None
 os.makedirs(DEFAULT_DB_DIR, exist_ok=True)
 os.makedirs(DEFAULT_DOCUMENTS_DIR, exist_ok=True)
 
-document_processor = get_document_processor(DOCUMENTS_DIR)
-db_manager = get_db_manager(DB_DIR)
+def initialize_components():
+    global db_manager, document_processor, file_watcher, watcher_thread
 
-# Initialize file watcher
-file_watcher = FileWatcher(DOCUMENTS_DIR, db_manager, document_processor)
+    try:
+        logger.info("Initializing document processor")
+        document_processor = get_document_processor(DOCUMENTS_DIR)
 
-# Start file watcher in a separate thread
-watcher_thread = threading.Thread(target=file_watcher.run, daemon=True)
-watcher_thread.start()
+        logger.info("Initializing database manager")
+        db_manager = get_db_manager(DB_DIR)
 
-logger.info("File watcher thread started")
+        logger.info("Initializing file watcher")
+        if file_watcher:
+            logger.info("Stopping existing file watcher")
+            file_watcher.stop()
 
-from fastapi.middleware.cors import CORSMiddleware
+        file_watcher = FileWatcher(DOCUMENTS_DIR, db_manager, document_processor)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
-    allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
-)
+        logger.info("Starting file watcher thread")
+        if watcher_thread and watcher_thread.is_alive():
+            logger.info("Stopping existing watcher thread")
+            watcher_thread.join()
+
+        watcher_thread = threading.Thread(target=file_watcher.run, daemon=True)
+        watcher_thread.start()
+        logger.info("File watcher thread started")
+
+    except Exception as e:
+        logger.error(f"Error initializing components: {str(e)}")
+        raise
+
+initialize_components()
 
 def create_llm():
     global llm
@@ -81,16 +99,12 @@ def create_llm():
         logger.error(f"Error creating LLM instance: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating LLM instance: {str(e)}")
 
-
 # Create initial LLM instance
 create_llm()
 
 class QueryInput(BaseModel):
     text: str
-    k: int = 5  # Default value is 3
-
-class PromptTemplateUpdate(BaseModel):
-    template: str
+    k: int = 5
 
 class ConfigUpdate(BaseModel):
     template: str
@@ -99,6 +113,7 @@ class ConfigUpdate(BaseModel):
 
 class FolderPath(BaseModel):
     path: str
+
 
 def get_selected_folder():
     if globals.SELECTED_FOLDER is None:
@@ -139,6 +154,16 @@ def cleanup_database():
         logger.error(f"Error during database cleanup: {str(e)}", exc_info=True)
 
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Received request: {request.method} {request.url}")
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    logger.info(f"Finished processing request: {request.method} {request.url} (took {process_time:.2f}s)")
+    return response
+
+
 
 
 @app.get("/db-state")
@@ -154,11 +179,27 @@ async def get_db_state():
         logger.error(f"Error getting database state: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))    
 
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+import asyncio
+import json
+
+class QueryInput(BaseModel):
+    text: str
+    k: int = 5
+
+@app.post("/query")
+async def query_documents(query_input: QueryInput, request: Request):
+    logger.info(f"Received query: {query_input}")
+    if not SELECTED_FOLDER:
+        raise HTTPException(status_code=400, detail="No folder selected. Please select a folder first.")
+    
+    return StreamingResponse(query_stream(query_input.text, query_input.k, request), media_type="application/json")
+
 async def query_stream(query: str, k: int, request: Request):
     try:
-        logger.info(f"Received query: {query}, k={k}")
-        yield json.dumps({"debug": f"Received query: {query}, k={k}"}) + "\n"
-
         logger.info(f"Performing similarity search with k={k}")
         docs = db_manager.similarity_search(query, k=k)
         logger.info(f"Similarity search returned {len(docs)} documents")
@@ -208,19 +249,8 @@ async def query_stream(query: str, k: int, request: Request):
         logger.error(f"Error during query processing: {str(e)}", exc_info=True)
         yield json.dumps({"error": f"Si è verificato un errore durante l'elaborazione della query: {str(e)}"}) + "\n"
 
-@app.post("/query")
-async def query_documents(query_input: QueryInput, request: Request):
-    if not SELECTED_FOLDER:
-        raise HTTPException(status_code=400, detail="No folder selected. Please select a folder first.")
-    
-    global db_manager
-    try:
-        docs = db_manager.similarity_search(query_input.text, k=query_input.k)
-        return {"documents": docs}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
 
-# Updated documents endpoint
+
 @app.get("/documents")
 async def list_documents():
     if not SELECTED_FOLDER:
@@ -247,12 +277,14 @@ async def refresh_documents():
 
 @app.get("/config")
 async def get_config():
+    models = get_installed_ollama_models()
     return {
         "prompt_template": config.get_prompt_template(),
         "model": config.get("model", "mistral:latest"),
         "k": config.get("k", 5),
         "folder_selected": SELECTED_FOLDER is not None,
-        "current_folder": SELECTED_FOLDER or "No folder selected"
+        "current_folder": SELECTED_FOLDER or "No folder selected",
+        "available_models": models
     }
 
 @app.post("/config")
@@ -288,32 +320,48 @@ async def reset_and_rescan():
 
 @app.post("/set-folder")
 async def set_folder(folder: FolderPath):
-    print(f"Received request to set folder: {folder.path}")
     global SELECTED_FOLDER, DB_DIR, DOCUMENTS_DIR, db_manager, document_processor, file_watcher, watcher_thread
-    SELECTED_FOLDER = folder.path
-    DB_DIR = os.path.join(SELECTED_FOLDER, '.raggy_db')
-    DOCUMENTS_DIR = os.path.join(SELECTED_FOLDER, 'documents')
-    
-    os.makedirs(DB_DIR, exist_ok=True)
-  
-    
-    db_manager = get_db_manager(DB_DIR)
-    document_processor = get_document_processor(DOCUMENTS_DIR)
-    
-    db_manager.clear_database()
-    
-    # Stop the existing file watcher
-    if file_watcher:
-        file_watcher.observer.stop()
-        watcher_thread.join()
-    
-    # Create a new file watcher for the new directory
-    file_watcher = FileWatcher(DOCUMENTS_DIR, db_manager, document_processor)
-    watcher_thread = threading.Thread(target=file_watcher.run, daemon=True)
-    watcher_thread.start()
-    
-    return {"message": f"Folder set to {SELECTED_FOLDER}"}
-    
+
+    try:
+        logger.info(f"Setting folder: {folder.path}")
+        
+        if not os.path.exists(folder.path):
+            logger.error(f"Folder does not exist: {folder.path}")
+            raise HTTPException(status_code=400, detail="Folder does not exist")
+        
+        if not os.access(folder.path, os.R_OK | os.W_OK):
+            logger.error(f"No read/write permission for folder: {folder.path}")
+            raise HTTPException(status_code=403, detail="No permission to access folder")
+
+        SELECTED_FOLDER = folder.path
+        DB_DIR = os.path.join(SELECTED_FOLDER, '.raggy_db')
+      
+        
+        try:
+            os.makedirs(DB_DIR, exist_ok=True)
+           
+        except OSError as e:
+            logger.error(f"Error creating directories: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to create necessary directories: {str(e)}")
+        
+        logger.info("Reinitializing components with new paths")
+        try:
+            initialize_components()
+        except Exception as e:
+            logger.error(f"Error reinitializing components: {str(e)}")
+            # Instead of raising an HTTPException, we'll return an error message
+            return {"error": f"Failed to reinitialize components: {str(e)}"}
+        
+        logger.info(f"Successfully set folder to {SELECTED_FOLDER}")
+        return {"message": f"Folder set to {SELECTED_FOLDER}"}
+
+    except HTTPException as he:
+        # Re-raise HTTP exceptions
+        raise he
+    except Exception as e:
+        logger.exception(f"Unexpected error setting folder: {str(e)}")
+        return {"error": f"Internal server error: {str(e)}"}
+
 async def periodic_refresh():
     while True:
         await asyncio.sleep(60)  # Refresh every 60 seconds
@@ -361,7 +409,6 @@ async def list_models():
 async def root():
     return {"message": "Local RAG App Backend is running"}
 
-
 @app.on_event("startup")
 async def startup_event():
     cleanup_database()
@@ -371,4 +418,4 @@ async def startup_event():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)

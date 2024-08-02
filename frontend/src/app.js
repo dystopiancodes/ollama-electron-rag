@@ -67,35 +67,74 @@ function App() {
   const [currentKValue, setCurrentKValue] = useState(5);
   const [currentModel, setCurrentModel] = useState(""); // Add this line
   const [selectedFolder, setSelectedFolder] = useState("");
+  const [backendReady, setBackendReady] = useState(false);
 
   useEffect(() => {
-    fetchConfig();
-    fetchModels();
+    const backendReadyHandler = () => {
+      console.log("Backend ready signal received from main process");
+      setBackendReady(true);
+      fetchConfig();
+      fetchModels();
+    };
+
+    window.electron.onBackendReady(backendReadyHandler);
+
+    // Check backend status every 5 seconds
+    const intervalId = setInterval(() => {
+      console.log("Checking backend status...");
+      window.electron.checkBackend().then((isReady) => {
+        console.log("Backend status:", isReady ? "ready" : "not ready");
+        if (isReady) {
+          setBackendReady(true);
+          clearInterval(intervalId);
+        }
+      });
+    }, 5000);
+
+    return () => {
+      clearInterval(intervalId);
+      window.electron.onBackendReady(null);
+    };
   }, []);
+
+  const fetchWithTimeout = async (url, options = {}, timeout = 5000) => {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(id);
+    return response;
+  };
 
   const fetchConfig = async () => {
     try {
       const response = await fetch("http://localhost:8000/config");
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
       const data = await response.json();
       setPromptTemplate(data.prompt_template);
       setSelectedModel(data.model);
-      setCurrentModel(data.model);
       setKValue(data.k);
-      setCurrentKValue(data.k);
+      setModels(data.available_models);
       setSelectedFolder(data.current_folder);
     } catch (error) {
       console.error("Error fetching config:", error);
       setSnackbar({
         open: true,
-        message: "Error fetching configuration",
+        message: "Error fetching configuration: " + error.message,
         severity: "error",
       });
     }
   };
-
   const fetchModels = async () => {
     try {
-      const response = await fetch("http://localhost:8000/models");
+      const response = await fetchWithTimeout("http://localhost:8000/models");
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
       const data = await response.json();
       console.log("Fetched models:", data.models);
       setModels(data.models);
@@ -103,7 +142,35 @@ function App() {
       console.error("Error fetching models:", error);
       setSnackbar({
         open: true,
-        message: "Error fetching models",
+        message: "Error fetching models: " + error.message,
+        severity: "error",
+      });
+    }
+  };
+
+  const handleFolderSelection = async () => {
+    try {
+      const result = await window.electron.selectFolder();
+      if (result.success) {
+        setSelectedFolder(result.path);
+        setSnackbar({
+          open: true,
+          message: result.message || "Folder set successfully",
+          severity: "success",
+        });
+        await fetchDocuments();
+      } else {
+        setSnackbar({
+          open: true,
+          message: `Error selecting folder: ${result.error}`,
+          severity: "error",
+        });
+      }
+    } catch (error) {
+      console.error("Error selecting folder:", error);
+      setSnackbar({
+        open: true,
+        message: `Error selecting folder: ${error.message}`,
         severity: "error",
       });
     }
@@ -135,6 +202,10 @@ function App() {
         body: JSON.stringify({ text: query, k: currentKValue }),
         signal: abortControllerRef.current.signal,
       });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -175,7 +246,7 @@ function App() {
         console.error("Error querying documents:", error);
         setSnackbar({
           open: true,
-          message: "Error querying documents",
+          message: "Error querying documents: " + error.message,
           severity: "error",
         });
       }
@@ -183,24 +254,6 @@ function App() {
       setIsLoading(false);
       setIsGenerating(false);
       abortControllerRef.current = null;
-    }
-  };
-
-  const handleFolderSelection = async () => {
-    try {
-      const folder = await window.electron.selectFolder();
-      if (folder) {
-        setSelectedFolder(folder);
-        // Optionally, trigger a refresh or update of the app state
-        await fetchDocuments();
-      }
-    } catch (error) {
-      console.error("Error selecting folder:", error);
-      setSnackbar({
-        open: true,
-        message: "Error selecting folder",
-        severity: "error",
-      });
     }
   };
 
@@ -395,6 +448,24 @@ function App() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <Container maxWidth="md">
+        {!backendReady ? (
+          <Box
+            sx={{
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              height: "100vh",
+            }}
+          >
+            <CircularProgress />
+            <Typography variant="h6" sx={{ ml: 2 }}>
+              Waiting for backend to start...
+            </Typography>
+          </Box>
+        ) : (
+          <Typography>Raggy</Typography>
+        )}
+
         <Box sx={{ my: 4, position: "relative", minHeight: "100vh", pb: 10 }}>
           <Button
             onClick={handleFolderSelection}
