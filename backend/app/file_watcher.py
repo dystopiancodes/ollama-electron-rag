@@ -5,6 +5,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import os
 import logging
+from .db_operations import cleanup_database, db_manager, document_processor
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -45,12 +46,14 @@ class DocumentHandler(FileSystemEventHandler):
             filename = os.path.basename(file_path)
             logger.debug(f"Removing file from database: {filename}")
             self.db_manager.remove_documents({"source": filename})
-            logger.debug(f"Removed from database: {filename}")
+            logger.info(f"Removed from database: {filename}")
+            # Trigger a full database cleanup
+            cleanup_database()
         except Exception as e:
             logger.error(f"Error removing file {file_path} from database: {str(e)}")
 
 class FileWatcher:
-    def __init__(self, path_to_watch, document_processor, db_manager):
+    def __init__(self, path_to_watch):
         self.path_to_watch = path_to_watch
         self.handler = DocumentHandler(document_processor, db_manager)
         self.observer = Observer()

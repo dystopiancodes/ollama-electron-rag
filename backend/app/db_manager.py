@@ -30,17 +30,14 @@ class DBManager:
 
     def similarity_search(self, query, k=4):
         try:
+            # Reload the database before each search to ensure it's up to date
+            self.db = self._load_or_create_db()
+            
             logger.info(f"Performing similarity search for query: {query}")
             results = self.db.similarity_search(query, k=k)
             logger.info(f"Similarity search returned {len(results)} results")
             
-            valid_results = []
-            for i, doc in enumerate(results):
-                if doc.page_content is None:
-                    logger.warning(f"Document at index {i} has None page_content")
-                else:
-                    valid_results.append(doc)
-                    logger.debug(f"Document {i}: {doc.page_content[:100]}...")  # Log first 100 chars
+            valid_results = [doc for doc in results if doc.page_content is not None]
             
             if not valid_results:
                 logger.warning("No valid results found after filtering")
@@ -118,6 +115,20 @@ class DBManager:
             self.db._collection.delete(where=metadata_filter)
             self.db.persist()
             logger.info(f"Documents removed with filter: {metadata_filter} and changes persisted")
+            # Reload the database to ensure it's up to date
+            self.db = self._load_or_create_db()
         except Exception as e:
             logger.error(f"Error removing documents: {str(e)}")
+            raise
+
+    def recreate_database(self):
+        logger.info("Recreating database...")
+        try:
+            # Clear existing database
+            self.clear_database()
+            # Create a new database instance
+            self.db = self._load_or_create_db()
+            logger.info("Database recreated successfully")
+        except Exception as e:
+            logger.error(f"Error recreating database: {str(e)}")
             raise

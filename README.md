@@ -15,3 +15,6 @@ cd ../frontend
 npm install
 npm run build  
 npm run dev
+
+llm combine:
+./combine_scripts.sh

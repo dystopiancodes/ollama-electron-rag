@@ -101,17 +101,14 @@ class DBManager:
 
     def similarity_search(self, query, k=4):
         try:
+            # Reload the database before each search to ensure it's up to date
+            self.db = self._load_or_create_db()
+            
             logger.info(f"Performing similarity search for query: {query}")
             results = self.db.similarity_search(query, k=k)
             logger.info(f"Similarity search returned {len(results)} results")
             
-            valid_results = []
-            for i, doc in enumerate(results):
-                if doc.page_content is None:
-                    logger.warning(f"Document at index {i} has None page_content")
-                else:
-                    valid_results.append(doc)
-                    logger.debug(f"Document {i}: {doc.page_content[:100]}...")  # Log first 100 chars
+            valid_results = [doc for doc in results if doc.page_content is not None]
             
             if not valid_results:
                 logger.warning("No valid results found after filtering")
@@ -123,6 +120,34 @@ class DBManager:
             logger.error(f"Error during similarity search: {str(e)}", exc_info=True)
             return [Document(page_content=f"An error occurred during the search: {str(e)}", metadata={})]
 
+    def add_texts(self, texts, metadatas=None):
+        try:
+            # Validate and clean the input data
+            valid_texts = []
+            valid_metadatas = []
+            for i, item in enumerate(texts):
+                if isinstance(item, tuple):
+                    text, metadata = item
+                else:
+                    text = item
+                    metadata = metadatas[i] if metadatas else None
+
+                if text is not None and isinstance(text, str) and text.strip() != "":
+                    valid_texts.append(text)
+                    valid_metadatas.append(metadata)
+                else:
+                    logger.warning(f"Skipping invalid text at index {i}")
+
+            if not valid_texts:
+                logger.warning("No valid texts to add to the database")
+                return
+
+            self.db.add_texts(valid_texts, metadatas=valid_metadatas)
+            self.db.persist()
+            logger.info(f"Added {len(valid_texts)} texts to the database and persisted changes")
+        except Exception as e:
+            logger.error(f"Error adding texts to database: {str(e)}")
+            raise
 
 
 
@@ -154,6 +179,17 @@ class DBManager:
             logger.info("Database cleared and changes persisted")
         except Exception as e:
             logger.error(f"Error clearing database: {str(e)}")
+            raise
+    
+    def remove_documents(self, metadata_filter):
+        try:
+            self.db._collection.delete(where=metadata_filter)
+            self.db.persist()
+            logger.info(f"Documents removed with filter: {metadata_filter} and changes persisted")
+            # Reload the database to ensure it's up to date
+            self.db = self._load_or_create_db()
+        except Exception as e:
+            logger.error(f"Error removing documents: {str(e)}")
             raise
 # File: document_processor.py
 
@@ -319,7 +355,9 @@ class DocumentHandler(FileSystemEventHandler):
             filename = os.path.basename(file_path)
             logger.debug(f"Removing file from database: {filename}")
             self.db_manager.remove_documents({"source": filename})
-            logger.debug(f"Removed from database: {filename}")
+            logger.info(f"Removed from database: {filename}")
+            # Force a refresh of the database
+            self.db_manager._load_or_create_db()
         except Exception as e:
             logger.error(f"Error removing file {file_path} from database: {str(e)}")
 
@@ -402,11 +440,11 @@ watcher_thread.start()
 logger.info("File watcher thread started")
 db_manager = DBManager("./data/db")
 # Initialize Ollama LLM
-llm = Ollama(model="llama3.1")
+llm = Ollama(model="mistral:latest")
 
 class QueryInput(BaseModel):
     text: str
-    k: int = 10  # Default value is 3
+    k: int = 3  # Default value is 3
 
 class PromptTemplateUpdate(BaseModel):
     template: str
