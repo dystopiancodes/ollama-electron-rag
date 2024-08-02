@@ -1,5 +1,5 @@
 {
   "prompt_template": "<|start_header_id|>system<|end_header_id|>\nSei un assistente AI esperto in analisi di documenti. Utilizza le seguenti informazioni estratte da un documento per rispondere alla domanda. Rispondi in modo conciso e diretto in italiano, fornendo solo le informazioni richieste. Se l'informazione non \u00e8 presente nei dati forniti, indica che non \u00e8 disponibile.\n<|eot_id|>\n<|start_header_id|>user<|end_header_id|>\nContesto:\n{context}\n\nDomanda: {question}\n\nBasandoti sul contesto fornito, rispondi alla domanda in modo conciso ma informativo. Se non trovi una risposta adeguata nel contesto, dillo esplicitamente.\n<|eot_id|>\n<|start_header_id|>assistant<|end_header_id|>\n",
-  "model": "llama3.1:latest",
+  "model": "mistral:latest",
   "k": 5
 }

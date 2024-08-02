@@ -34,7 +34,7 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, "index.html"));
-  mainWindow.webContents.openDevTools();
+  //mainWindow.webContents.openDevTools();
 }
 
 function findVenvPython(backendPath) {
@@ -154,9 +154,50 @@ app.on("window-all-closed", function () {
   }
 });
 
-// ... (rest of the code remains the same)
+ipcMain.handle("open-file", async (event, filename) => {
+  console.log("Main: Received request to open file:", filename);
 
-// ... (rest of the code remains the same)
+  // First, try to find the file in the app's user data directory
+  let documentsPath = path.join(app.getPath("userData"), "documents");
+  let filePath = path.join(documentsPath, filename);
+
+  console.log("Main: Checking file at path:", filePath);
+
+  if (!fs.existsSync(filePath)) {
+    console.log(
+      "File not found in user data directory, checking in the backend data directory"
+    );
+    // If not found, try the backend data directory
+    documentsPath = path.join(
+      __dirname,
+      "..",
+      "..",
+      "backend",
+      "data",
+      "documents"
+    );
+    filePath = path.join(documentsPath, filename);
+    console.log("Main: Checking file at alternate path:", filePath);
+  }
+
+  if (fs.existsSync(filePath)) {
+    console.log("Main: File found, attempting to open");
+    try {
+      await shell.openPath(filePath);
+      console.log("Main: File opened successfully");
+      return { success: true, message: "File opened successfully" };
+    } catch (error) {
+      console.error("Main: Error opening file:", error);
+      return {
+        success: false,
+        message: `Error opening file: ${error.message}`,
+      };
+    }
+  } else {
+    console.error("Main: File not found");
+    return { success: false, message: "File not found" };
+  }
+});
 
 ipcMain.handle("select-folder", async () => {
   try {

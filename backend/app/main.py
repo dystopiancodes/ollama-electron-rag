@@ -310,12 +310,14 @@ async def reset_and_rescan():
     try:
         db_manager.clear_database()
         for filename in os.listdir(DOCUMENTS_DIR):
-            if filename.endswith(('.pdf', '.xml')):
+            if filename.endswith(('.pdf', '.xml')):  # Adjust the extensions as needed
                 file_path = os.path.join(DOCUMENTS_DIR, filename)
-                chunks = document_processor.process_file(filename)
-                db_manager.add_texts(chunks)
+                chunks = document_processor.process_file(file_path)
+                metadata = [{"source": filename} for _ in chunks]
+                db_manager.add_texts(chunks, metadata)
         return {"message": "Reset and rescan completed successfully"}
     except Exception as e:
+        logger.error(f"Error during reset and rescan: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error during reset and rescan: {str(e)}")
 
 @app.post("/set-folder")
@@ -335,32 +337,24 @@ async def set_folder(folder: FolderPath):
 
         SELECTED_FOLDER = folder.path
         DB_DIR = os.path.join(SELECTED_FOLDER, '.raggy_db')
-      
-        
+        DOCUMENTS_DIR = folder.path
+
         try:
             os.makedirs(DB_DIR, exist_ok=True)
-           
+            initialize_components()
+            await reset_and_rescan()  # Ensure this function is awaited as it's an async function
         except OSError as e:
             logger.error(f"Error creating directories: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Failed to create necessary directories: {str(e)}")
-        
-        logger.info("Reinitializing components with new paths")
-        try:
-            initialize_components()
-        except Exception as e:
-            logger.error(f"Error reinitializing components: {str(e)}")
-            # Instead of raising an HTTPException, we'll return an error message
-            return {"error": f"Failed to reinitialize components: {str(e)}"}
         
         logger.info(f"Successfully set folder to {SELECTED_FOLDER}")
         return {"message": f"Folder set to {SELECTED_FOLDER}"}
 
     except HTTPException as he:
-        # Re-raise HTTP exceptions
         raise he
     except Exception as e:
         logger.exception(f"Unexpected error setting folder: {str(e)}")
-        return {"error": f"Internal server error: {str(e)}"}
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 async def periodic_refresh():
     while True:
