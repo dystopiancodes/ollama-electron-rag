@@ -380,7 +380,7 @@ class DocumentProcessor:
 # File: file_watcher.py
 
 # File: backend/app/file_watcher.py
-
+import threading
 import time
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -399,57 +399,61 @@ class DocumentHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         if not event.is_directory:
-            logger.debug(f"New file detected: {event.src_path}")
+            logger.info(f"New file detected: {event.src_path}")
             self._process_file(event.src_path)
 
     def on_modified(self, event):
         if not event.is_directory:
-            logger.debug(f"File modified: {event.src_path}")
+            logger.info(f"File modified: {event.src_path}")
             self._process_file(event.src_path)
-
-    def on_deleted(self, event):
-        if not event.is_directory:
-            logger.debug(f"File deleted: {event.src_path}")
-            self._remove_file_from_db(event.src_path)
 
     def _process_file(self, file_path):
         try:
-            logger.debug(f"Starting to process file: {file_path}")
+            logger.info(f"Starting to process file: {file_path}")
             chunks = self.document_processor.process_file(file_path)
-            logger.debug(f"File processed, got {len(chunks)} chunks")
+            logger.info(f"File processed, got {len(chunks)} chunks")
             metadata = {"source": os.path.basename(file_path)}
             self.db_manager.add_texts(chunks, [metadata] * len(chunks))
-            logger.debug(f"Processed and added to database: {file_path}")
+            logger.info(f"Processed and added to database: {file_path}")
         except Exception as e:
-            logger.error(f"Error processing file {file_path}: {str(e)}")
+            logger.error(f"Error processing file {file_path}: {str(e)}", exc_info=True)
+
+    def on_deleted(self, event):
+        if not event.is_directory:
+            logger.info(f"File deleted: {event.src_path}")
+            self._remove_file_from_db(event.src_path)
 
     def _remove_file_from_db(self, file_path):
         try:
             filename = os.path.basename(file_path)
-            logger.debug(f"Removing file from database: {filename}")
+            logger.info(f"Removing file from database: {filename}")
             self.db_manager.remove_documents({"source": filename})
             logger.info(f"Removed from database: {filename}")
-            # Trigger a full database cleanup
-            cleanup_database(self.db_manager, self.document_processor, self.documents_dir)
         except Exception as e:
-            logger.error(f"Error removing file {file_path} from database: {str(e)}")
+            logger.error(f"Error removing file {file_path} from database: {str(e)}", exc_info=True)
 
 class FileWatcher:
     def __init__(self, path_to_watch, db_manager, document_processor):
         self.path_to_watch = path_to_watch
         self.handler = DocumentHandler(db_manager, document_processor, path_to_watch)
         self.observer = Observer()
+        self.stop_event = threading.Event()
 
     def run(self):
-        logger.debug(f"Starting file watcher on path: {self.path_to_watch}")
         self.observer.schedule(self.handler, self.path_to_watch, recursive=False)
         self.observer.start()
         try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
+            while not self.stop_event.is_set():
+                self.stop_event.wait(1)
+        finally:
             self.observer.stop()
-        self.observer.join()
+            self.observer.join()
+
+    def stop(self):
+        self.stop_event.set()
+        if self.observer.is_alive():
+            self.observer.stop()
+            self.observer.join()
 # File: globals.py
 
 # File: backend/app/globals.py
@@ -504,6 +508,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
+
+
 # Global variables
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DB_DIR = os.path.join(BASE_DIR, "data", "db")
@@ -522,13 +532,34 @@ os.makedirs(DEFAULT_DB_DIR, exist_ok=True)
 os.makedirs(DEFAULT_DOCUMENTS_DIR, exist_ok=True)
 
 def initialize_components():
-    global document_processor, db_manager, file_watcher, watcher_thread
-    document_processor = get_document_processor(DOCUMENTS_DIR)
-    db_manager = get_db_manager(DB_DIR)
-    file_watcher = FileWatcher(DOCUMENTS_DIR, db_manager, document_processor)
-    watcher_thread = threading.Thread(target=file_watcher.run, daemon=True)
-    watcher_thread.start()
-    logger.info("File watcher thread started")
+    global db_manager, document_processor, file_watcher, watcher_thread
+
+    try:
+        logger.info("Initializing document processor")
+        document_processor = get_document_processor(DOCUMENTS_DIR)
+
+        logger.info("Initializing database manager")
+        db_manager = get_db_manager(DB_DIR)
+
+        logger.info("Initializing file watcher")
+        if file_watcher:
+            logger.info("Stopping existing file watcher")
+            file_watcher.stop()
+
+        file_watcher = FileWatcher(DOCUMENTS_DIR, db_manager, document_processor)
+
+        logger.info("Starting file watcher thread")
+        if watcher_thread and watcher_thread.is_alive():
+            logger.info("Stopping existing watcher thread")
+            watcher_thread.join()
+
+        watcher_thread = threading.Thread(target=file_watcher.run, daemon=True)
+        watcher_thread.start()
+        logger.info("File watcher thread started")
+
+    except Exception as e:
+        logger.error(f"Error initializing components: {str(e)}")
+        raise
 
 initialize_components()
 
@@ -552,6 +583,7 @@ class QueryInput(BaseModel):
 
 class ConfigUpdate(BaseModel):
     template: str
+    folder: str
     model: str
     k: int
 
@@ -607,10 +639,7 @@ async def log_requests(request: Request, call_next):
     logger.info(f"Finished processing request: {request.method} {request.url} (took {process_time:.2f}s)")
     return response
 
-@app.get("/health")
-async def health_check():
-    logger.info("Health check endpoint called")
-    return {"status": "ok"}
+
 
 
 @app.get("/db-state")
@@ -626,9 +655,20 @@ async def get_db_state():
         logger.error(f"Error getting database state: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))    
 
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+import asyncio
+import json
+
+class QueryInput(BaseModel):
+    text: str
+    k: int = 5
+
 @app.post("/query")
-async def query_documents(query: dict):
-    logger.info(f"Received query: {query}")
+async def query_documents(query_input: QueryInput, request: Request):
+    logger.info(f"Received query: {query_input}")
     if not SELECTED_FOLDER:
         raise HTTPException(status_code=400, detail="No folder selected. Please select a folder first.")
     
@@ -636,9 +676,6 @@ async def query_documents(query: dict):
 
 async def query_stream(query: str, k: int, request: Request):
     try:
-        logger.info(f"Received query: {query}, k={k}")
-        yield json.dumps({"debug": f"Received query: {query}, k={k}"}) + "\n"
-
         logger.info(f"Performing similarity search with k={k}")
         docs = db_manager.similarity_search(query, k=k)
         logger.info(f"Similarity search returned {len(docs)} documents")
@@ -687,7 +724,9 @@ async def query_stream(query: str, k: int, request: Request):
     except Exception as e:
         logger.error(f"Error during query processing: {str(e)}", exc_info=True)
         yield json.dumps({"error": f"Si è verificato un errore durante l'elaborazione della query: {str(e)}"}) + "\n"
-# Updated documents endpoint
+
+
+
 @app.get("/documents")
 async def list_documents():
     if not SELECTED_FOLDER:
@@ -714,12 +753,14 @@ async def refresh_documents():
 
 @app.get("/config")
 async def get_config():
+    models = get_installed_ollama_models()
     return {
         "prompt_template": config.get_prompt_template(),
         "model": config.get("model", "mistral:latest"),
         "k": config.get("k", 5),
         "folder_selected": SELECTED_FOLDER is not None,
-        "current_folder": SELECTED_FOLDER or "No folder selected"
+        "current_folder": SELECTED_FOLDER or "No folder selected",
+        "available_models": models
     }
 
 @app.post("/config")
@@ -727,6 +768,8 @@ async def update_config(config_update: ConfigUpdate):
     config.set_prompt_template(config_update.template)
     config.set("model", config_update.model)
     config.set("k", config_update.k)
+    config.set("folder_selected", config_update.folder)
+    config.set("current_folder", config_update.folder)
     create_llm()  # Recreate the LLM instance with the new model
     return {"message": "Config updated successfully"}
 
@@ -745,30 +788,51 @@ async def reset_and_rescan():
     try:
         db_manager.clear_database()
         for filename in os.listdir(DOCUMENTS_DIR):
-            if filename.endswith(('.pdf', '.xml')):
+            if filename.endswith(('.pdf', '.xml')):  # Adjust the extensions as needed
                 file_path = os.path.join(DOCUMENTS_DIR, filename)
-                chunks = document_processor.process_file(filename)
-                db_manager.add_texts(chunks)
+                chunks = document_processor.process_file(file_path)
+                metadata = [{"source": filename} for _ in chunks]
+                db_manager.add_texts(chunks, metadata)
         return {"message": "Reset and rescan completed successfully"}
     except Exception as e:
+        logger.error(f"Error during reset and rescan: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error during reset and rescan: {str(e)}")
 
 @app.post("/set-folder")
-async def set_folder(folder: dict):
-    logger.info(f"Setting folder: {folder['path']}")
+async def set_folder(folder: FolderPath):
     global SELECTED_FOLDER, DB_DIR, DOCUMENTS_DIR, db_manager, document_processor, file_watcher, watcher_thread
-    SELECTED_FOLDER = folder.path
-    DB_DIR = os.path.join(SELECTED_FOLDER, '.raggy_db')
-    DOCUMENTS_DIR = os.path.join(SELECTED_FOLDER, 'documents')
-    
-    os.makedirs(DB_DIR, exist_ok=True)
-    os.makedirs(DOCUMENTS_DIR, exist_ok=True)
-    
-    # Reinitialize components with new paths
-    initialize_components()
-    
-    return {"message": f"Folder set to {SELECTED_FOLDER}"}
 
+    try:
+        logger.info(f"Setting folder: {folder.path}")
+        
+        if not os.path.exists(folder.path):
+            logger.error(f"Folder does not exist: {folder.path}")
+            raise HTTPException(status_code=400, detail="Folder does not exist")
+        
+        if not os.access(folder.path, os.R_OK | os.W_OK):
+            logger.error(f"No read/write permission for folder: {folder.path}")
+            raise HTTPException(status_code=403, detail="No permission to access folder")
+
+        SELECTED_FOLDER = folder.path
+        DB_DIR = os.path.join(SELECTED_FOLDER, '.raggy_db')
+        DOCUMENTS_DIR = folder.path
+
+        try:
+            os.makedirs(DB_DIR, exist_ok=True)
+            initialize_components()
+            await reset_and_rescan()  # Ensure this function is awaited as it's an async function
+        except OSError as e:
+            logger.error(f"Error creating directories: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to create necessary directories: {str(e)}")
+        
+        logger.info(f"Successfully set folder to {SELECTED_FOLDER}")
+        return {"message": f"Folder set to {SELECTED_FOLDER}"}
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.exception(f"Unexpected error setting folder: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 async def periodic_refresh():
     while True:
@@ -826,7 +890,7 @@ async def startup_event():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
 # File: utils.py
 
 # backend/app/utils.py

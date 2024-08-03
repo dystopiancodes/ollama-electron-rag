@@ -1,4 +1,3 @@
-require("dotenv").config();
 const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -119,10 +118,9 @@ function checkBackendHealth(retries = 0, maxRetries = 30) {
       family: 4,
     })
     .then((response) => {
-      console.log("Backend is ready, creating window");
+      console.log("Backend is ready");
       console.log("Response data:", response.data);
-      mainWindow.webContents.send("backendReady"); // Notify the renderer process
-      createWindow();
+      app.emit("backend-ready");
     })
     .catch((error) => {
       console.log(`Backend not ready yet: ${error.message}`);
@@ -140,6 +138,13 @@ function checkBackendHealth(retries = 0, maxRetries = 30) {
 app.whenReady().then(() => {
   console.log("Electron app is ready");
   startBackend();
+
+  app.on("backend-ready", () => {
+    createWindow();
+    if (mainWindow) {
+      mainWindow.webContents.send("backendReady");
+    }
+  });
 
   app.on("activate", function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -235,6 +240,7 @@ ipcMain.handle("select-folder", async () => {
     return { success: false, error: error.message };
   }
 });
+
 ipcMain.handle("check-backend", async () => {
   try {
     const response = await axios.get("http://localhost:8000/health");

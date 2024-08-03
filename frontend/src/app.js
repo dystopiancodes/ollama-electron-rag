@@ -67,6 +67,8 @@ function App() {
   const [currentKValue, setCurrentKValue] = useState(5);
   const [currentModel, setCurrentModel] = useState(""); // Add this line
   const [selectedFolder, setSelectedFolder] = useState("");
+  const [folderLoaded, setFolderLoaded] = useState(false);
+
   const [backendReady, setBackendReady] = useState(false);
   const [backendStatus, setBackendStatus] = useState(
     "Checking backend status..."
@@ -120,19 +122,55 @@ function App() {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       const data = await response.json();
-      console.log(data);
+      console.log("Fetched config:", data);
       setPromptTemplate(data.prompt_template);
       setSelectedModel(data.model);
       setKValue(data.k);
       setCurrentModel(data.model);
       setCurrentKValue(data.k);
       setModels(data.available_models);
-      setSelectedFolder(data.current_folder);
+      if (data.current_folder && data.current_folder !== "No folder selected") {
+        setSelectedFolder(data.current_folder);
+        setFolderLoaded(true);
+      } else {
+        setSelectedFolder("");
+        setFolderLoaded(false);
+      }
     } catch (error) {
       console.error("Error fetching config:", error);
       setSnackbar({
         open: true,
         message: "Error fetching configuration: " + error.message,
+        severity: "error",
+      });
+    }
+  };
+
+  const handleFolderSelection = async () => {
+    try {
+      const result = await window.electron.selectFolder();
+      if (result.success) {
+        setSelectedFolder(result.path);
+        setFolderLoaded(true);
+        setSnackbar({
+          open: true,
+          message: result.message || "Folder set successfully",
+          severity: "success",
+        });
+        // Refetch config to ensure we have the latest data
+        await fetchConfig();
+      } else {
+        setSnackbar({
+          open: true,
+          message: `Error selecting folder: ${result.error}`,
+          severity: "error",
+        });
+      }
+    } catch (error) {
+      console.error("Error selecting folder:", error);
+      setSnackbar({
+        open: true,
+        message: `Error selecting folder: ${error.message}`,
         severity: "error",
       });
     }
@@ -152,34 +190,6 @@ function App() {
       setSnackbar({
         open: true,
         message: "Error fetching models: " + error.message,
-        severity: "error",
-      });
-    }
-  };
-
-  const handleFolderSelection = async () => {
-    try {
-      const result = await window.electron.selectFolder();
-      if (result.success) {
-        setSelectedFolder(result.path);
-        setSnackbar({
-          open: true,
-          message: result.message || "Folder set successfully",
-          severity: "success",
-        });
-        await fetchDocuments();
-      } else {
-        setSnackbar({
-          open: true,
-          message: `Error selecting folder: ${result.error}`,
-          severity: "error",
-        });
-      }
-    } catch (error) {
-      console.error("Error selecting folder:", error);
-      setSnackbar({
-        open: true,
-        message: `Error selecting folder: ${error.message}`,
         severity: "error",
       });
     }

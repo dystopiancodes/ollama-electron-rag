@@ -56,6 +56,29 @@ watcher_thread = None
 os.makedirs(DEFAULT_DB_DIR, exist_ok=True)
 os.makedirs(DEFAULT_DOCUMENTS_DIR, exist_ok=True)
 
+
+def load_initial_config():
+    global SELECTED_FOLDER, DB_DIR, DOCUMENTS_DIR
+    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.json')
+    try:
+        with open(config_path, 'r') as f:
+            data = json.load(f)
+            SELECTED_FOLDER = data.get('current_folder')
+            if SELECTED_FOLDER:
+                DB_DIR = os.path.join(SELECTED_FOLDER, '.raggy_db')
+                DOCUMENTS_DIR = SELECTED_FOLDER
+                # Ensure the DB_DIR exists
+                os.makedirs(DB_DIR, exist_ok=True)
+    except FileNotFoundError:
+        print(f"Config file not found at {config_path}")
+    except json.JSONDecodeError:
+        print(f"Error decoding JSON from {config_path}")
+    except Exception as e:
+        print(f"Error loading initial config: {str(e)}")
+
+# Load initial config when the app starts
+load_initial_config()
+
 def initialize_components():
     global db_manager, document_processor, file_watcher, watcher_thread
 
@@ -85,6 +108,8 @@ def initialize_components():
     except Exception as e:
         logger.error(f"Error initializing components: {str(e)}")
         raise
+
+    
 
 initialize_components()
 
@@ -288,12 +313,14 @@ async def get_config():
         "available_models": models
     }
 
+
 @app.post("/config")
 async def update_config(config_update: ConfigUpdate):
     config.set_prompt_template(config_update.template)
     config.set("model", config_update.model)
     config.set("k", config_update.k)
-    config.set("folder_selected", config_update.folder)
+    global SELECTED_FOLDER
+    SELECTED_FOLDER = config_update.folder
     config.set("current_folder", config_update.folder)
     create_llm()  # Recreate the LLM instance with the new model
     return {"message": "Config updated successfully"}
@@ -325,39 +352,39 @@ async def reset_and_rescan():
 
 @app.post("/set-folder")
 async def set_folder(folder: FolderPath):
-    global SELECTED_FOLDER, DB_DIR, DOCUMENTS_DIR, db_manager, document_processor, file_watcher, watcher_thread
-
     try:
-        logger.info(f"Setting folder: {folder.path}")
-        
         if not os.path.exists(folder.path):
-            logger.error(f"Folder does not exist: {folder.path}")
             raise HTTPException(status_code=400, detail="Folder does not exist")
         
         if not os.access(folder.path, os.R_OK | os.W_OK):
-            logger.error(f"No read/write permission for folder: {folder.path}")
             raise HTTPException(status_code=403, detail="No permission to access folder")
 
+        # Update the global variables
+        global SELECTED_FOLDER, DB_DIR, DOCUMENTS_DIR
         SELECTED_FOLDER = folder.path
         DB_DIR = os.path.join(SELECTED_FOLDER, '.raggy_db')
         DOCUMENTS_DIR = folder.path
 
-        try:
-            os.makedirs(DB_DIR, exist_ok=True)
-            initialize_components()
-            await reset_and_rescan()  # Ensure this function is awaited as it's an async function
-        except OSError as e:
-            logger.error(f"Error creating directories: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to create necessary directories: {str(e)}")
-        
-        logger.info(f"Successfully set folder to {SELECTED_FOLDER}")
-        return {"message": f"Folder set to {SELECTED_FOLDER}"}
+        # Create necessary directories
+        os.makedirs(DB_DIR, exist_ok=True)
 
+        # Update config.json
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.json')
+        with open(config_path, 'r+') as f:
+            data = json.load(f)
+            data['current_folder'] = SELECTED_FOLDER
+            f.seek(0)
+            json.dump(data, f, indent=4)
+            f.truncate()
+
+        # Reinitialize components with new folder
+        initialize_components()
+        
+        return {"message": f"Folder set to {SELECTED_FOLDER}"}
     except HTTPException as he:
         raise he
     except Exception as e:
-        logger.exception(f"Unexpected error setting folder: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error setting folder: {str(e)}")
 
 async def periodic_refresh():
     while True:
